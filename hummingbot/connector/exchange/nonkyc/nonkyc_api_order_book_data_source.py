@@ -72,22 +72,19 @@ class NonkycAPIOrderBookDataSource(OrderBookTrackerDataSource):
             for trading_pair in self._trading_pairs:
                 symbol = await self._connector.exchange_symbol_associated_to_pair(trading_pair=trading_pair)
 
-            payload = {
-                "method": CONSTANTS.WS_METHOD_SUBSCRIBE_TRADES,
-                "params": {"symbol": symbol}
+                trade_payload = {
+                    "method": CONSTANTS.WS_METHOD_SUBSCRIBE_TRADES,
+                    "params": {"symbol": symbol}
+                }
+                subscribe_trade_request: WSJSONRequest = WSJSONRequest(payload=trade_payload)
+                await ws.send(subscribe_trade_request)
 
-            }
-            subscribe_trade_request: WSJSONRequest = WSJSONRequest(payload=payload)
-
-            payload = {
-                "method": CONSTANTS.WS_METHOD_SUBSCRIBE_ORDERBOOK,
-                "params": {"symbol": symbol, "limit": 100}
-            }
-
-            subscribe_orderbook_request: WSJSONRequest = WSJSONRequest(payload=payload)
-
-            await ws.send(subscribe_trade_request)
-            await ws.send(subscribe_orderbook_request)
+                ob_payload = {
+                    "method": CONSTANTS.WS_METHOD_SUBSCRIBE_ORDERBOOK,
+                    "params": {"symbol": symbol, "limit": 100}
+                }
+                subscribe_orderbook_request: WSJSONRequest = WSJSONRequest(payload=ob_payload)
+                await ws.send(subscribe_orderbook_request)
 
             self.logger().info("Subscribed to public order book and trade channels...")
         except asyncio.CancelledError:
@@ -117,14 +114,16 @@ class NonkycAPIOrderBookDataSource(OrderBookTrackerDataSource):
 
     async def _parse_trade_message(self, raw_message: Dict[str, Any], message_queue: asyncio.Queue):
         if "result" not in raw_message:
-            trading_pair = await self._connector.trading_pair_associated_to_exchange_symbol(symbol=raw_message.get("params", {}).get("symbol"))
+            trading_pair = await self._connector.trading_pair_associated_to_exchange_symbol(
+                symbol=raw_message.get("params", {}).get("symbol"))
             trade_message = NonkycOrderBook.trade_message_from_exchange(
                 raw_message, {"trading_pair": trading_pair})
             message_queue.put_nowait(trade_message)
 
     async def _parse_order_book_diff_message(self, raw_message: Dict[str, Any], message_queue: asyncio.Queue):
         if "result" not in raw_message:
-            trading_pair = await self._connector.trading_pair_associated_to_exchange_symbol(symbol=raw_message.get("params", {}).get("symbol"))
+            trading_pair = await self._connector.trading_pair_associated_to_exchange_symbol(
+                symbol=raw_message.get("params", {}).get("symbol"))
             order_book_message: OrderBookMessage = NonkycOrderBook.diff_message_from_exchange(
                 raw_message, time.time(), {"trading_pair": trading_pair})
 
@@ -139,3 +138,65 @@ class NonkycAPIOrderBookDataSource(OrderBookTrackerDataSource):
             elif event_type == CONSTANTS.DIFF_EVENT_TYPE:
                 channel = self._diff_messages_queue_key
         return channel
+
+    async def subscribe_to_trading_pair(self, trading_pair: str) -> bool:
+        """
+        Subscribes to order book and trade channels for a single trading pair on the
+        existing WebSocket connection.
+
+        :param trading_pair: the trading pair to subscribe to
+        :return: True if subscription was successful, False otherwise
+        """
+        if self._ws_assistant is None:
+            self.logger().warning(
+                f"Cannot subscribe to {trading_pair}: WebSocket not connected"
+            )
+            return False
+
+        try:
+            symbol = await self._connector.exchange_symbol_associated_to_pair(trading_pair=trading_pair)
+
+            trade_payload = {
+                "method": CONSTANTS.WS_METHOD_SUBSCRIBE_TRADES,
+                "params": {"symbol": symbol}
+            }
+            await self._ws_assistant.send(WSJSONRequest(payload=trade_payload))
+
+            ob_payload = {
+                "method": CONSTANTS.WS_METHOD_SUBSCRIBE_ORDERBOOK,
+                "params": {"symbol": symbol, "limit": 100}
+            }
+            await self._ws_assistant.send(WSJSONRequest(payload=ob_payload))
+
+            self.add_trading_pair(trading_pair)
+            self.logger().info(f"Subscribed to {trading_pair} order book and trade channels")
+            return True
+
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            self.logger().exception(f"Unexpected error subscribing to {trading_pair} channels")
+            return False
+
+    async def unsubscribe_from_trading_pair(self, trading_pair: str) -> bool:
+        """
+        Unsubscribes from order book and trade channels for a single trading pair.
+        NonKYC API does not have an explicit unsubscribe method, so we just remove the pair
+        from the internal tracking list.
+
+        :param trading_pair: the trading pair to unsubscribe from
+        :return: True if successfully removed, False otherwise
+        """
+        if self._ws_assistant is None:
+            self.logger().warning(
+                f"Cannot unsubscribe from {trading_pair}: WebSocket not connected"
+            )
+            return False
+
+        try:
+            self.remove_trading_pair(trading_pair)
+            self.logger().info(f"Unsubscribed from {trading_pair} channels")
+            return True
+        except Exception:
+            self.logger().exception(f"Unexpected error unsubscribing from {trading_pair} channels")
+            return False
