@@ -1,11 +1,11 @@
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, TypedDict
 
 
 class Chain(Enum):
     ETHEREUM = ('ethereum', 'ETH')
-    TEZOS = ('tezos', 'XTZ')
+    SOLANA = ('solana', 'SOL')
 
     def __init__(self, chain: str, native_currency: str):
         self.chain = chain
@@ -16,6 +16,35 @@ class Connector(Enum):
     def __int__(self, chain: Chain, connector: str):
         self.chain = chain
         self.connector = connector
+
+
+class ConnectorType(Enum):
+    SWAP = "SWAP"
+    CLMM = "CLMM"
+    AMM = "AMM"
+
+
+class TransactionStatus(Enum):
+    """Transaction status constants for gateway operations."""
+    CONFIRMED = 1
+    PENDING = 0
+    FAILED = -1
+
+
+class Token(TypedDict):
+    """Token information from gateway."""
+    symbol: str
+    address: str
+    decimals: int
+    name: str
+
+
+def get_connector_type(connector_name: str) -> ConnectorType:
+    if "/clmm" in connector_name:
+        return ConnectorType.CLMM
+    elif "/amm" in connector_name:
+        return ConnectorType.AMM
+    return ConnectorType.SWAP
 
 
 @dataclass

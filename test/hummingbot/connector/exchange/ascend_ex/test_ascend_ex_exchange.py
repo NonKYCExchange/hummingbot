@@ -8,14 +8,12 @@ from unittest.mock import AsyncMock, patch
 from aioresponses import aioresponses
 from aioresponses.core import RequestCall
 
-from hummingbot.client.config.client_config_map import ClientConfigMap
-from hummingbot.client.config.config_helpers import ClientConfigAdapter
 from hummingbot.connector.exchange.ascend_ex import ascend_ex_constants as CONSTANTS, ascend_ex_web_utils as web_utils
 from hummingbot.connector.exchange.ascend_ex.ascend_ex_exchange import AscendExExchange
 from hummingbot.connector.test_support.exchange_connector_test import AbstractExchangeConnectorTests
 from hummingbot.connector.trading_rule import TradingRule
 from hummingbot.core.data_type.common import OrderType, TradeType
-from hummingbot.core.data_type.in_flight_order import InFlightOrder, OrderState, TradeUpdate
+from hummingbot.core.data_type.in_flight_order import InFlightOrder, TradeUpdate
 from hummingbot.core.data_type.trade_fee import AddedToCostTradeFee, TokenAmount, TradeFeeBase
 from hummingbot.core.event.events import BuyOrderCompletedEvent, MarketOrderFailureEvent, OrderFilledEvent
 
@@ -330,9 +328,7 @@ class AscendExExchangeTests(AbstractExchangeConnectorTests.ExchangeConnectorTest
         return f"{base_token}/{quote_token}"
 
     def create_exchange_instance(self):
-        client_config_map = ClientConfigAdapter(ClientConfigMap())
         return AscendExExchange(
-            client_config_map=client_config_map,
             ascend_ex_api_key="testAPIKey",
             ascend_ex_secret_key="testSecret",
             ascend_ex_group_id="6",
@@ -825,7 +821,7 @@ class AscendExExchangeTests(AbstractExchangeConnectorTests.ExchangeConnectorTest
         )
         self.validate_order_creation_request(order=order_to_validate_request, request_call=order_request)
 
-        self.assertEquals(0, len(self.buy_order_created_logger.event_log))
+        self.assertEqual(0, len(self.buy_order_created_logger.event_log))
         failure_event: MarketOrderFailureEvent = self.order_failure_logger.event_log[0]
         self.assertEqual(self.exchange.current_timestamp, failure_event.timestamp)
         self.assertEqual(OrderType.LIMIT, failure_event.order_type)
@@ -834,17 +830,7 @@ class AscendExExchangeTests(AbstractExchangeConnectorTests.ExchangeConnectorTest
         self.assertTrue(
             self.is_logged(
                 "NETWORK",
-                f"Error submitting {order_to_validate_request.trade_type.name.lower()} "
-                f"{order_to_validate_request.order_type.name} order to Ascend_ex for 100.000000 {self.trading_pair} "
-                f"10000.0000.",
-            )
-        )
-        self.assertTrue(
-            self.is_logged(
-                "INFO",
-                f"Order {order_id} has failed. Order Update: OrderUpdate(trading_pair='{self.trading_pair}', "
-                f"update_timestamp={self.exchange.current_timestamp}, new_state={repr(OrderState.FAILED)}, "
-                f"client_order_id='{order_id}', exchange_order_id=None, misc_updates=None)",
+                f"Error submitting buy LIMIT order to {self.exchange.name_cap} for 100.000000 {self.trading_pair} 10000.0000."
             )
         )
 
@@ -1112,6 +1098,6 @@ class AscendExExchangeTests(AbstractExchangeConnectorTests.ExchangeConnectorTest
             self.is_logged(
                 "INFO",
                 f"Created {OrderType.MARKET.name} {TradeType.BUY.name} order {order_id} for "
-                f"{Decimal('100.000000')} {self.trading_pair}."
+                f"{Decimal('100.000000')} {self.trading_pair} at {Decimal('10000')}."
             )
         )

@@ -1,6 +1,6 @@
 import asyncio
 from decimal import Decimal
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from bidict import bidict
 
@@ -30,9 +30,6 @@ from hummingbot.core.utils.estimate_fee import build_perpetual_trade_fee
 from hummingbot.core.web_assistant.connections.data_types import RESTMethod
 from hummingbot.core.web_assistant.web_assistants_factory import WebAssistantsFactory
 
-if TYPE_CHECKING:
-    from hummingbot.client.config.config_helpers import ClientConfigAdapter
-
 s_decimal_NaN = Decimal("nan")
 s_decimal_0 = Decimal(0)
 
@@ -43,7 +40,8 @@ class OkxPerpetualDerivative(PerpetualDerivativePyBase):
 
     def __init__(
         self,
-        client_config_map: "ClientConfigAdapter",
+        balance_asset_limit: Optional[Dict[str, Dict[str, Decimal]]] = None,
+        rate_limits_share_pct: Decimal = Decimal("100"),
         okx_perpetual_api_key: str = None,
         okx_perpetual_secret_key: str = None,
         okx_perpetual_passphrase: str = None,
@@ -59,8 +57,9 @@ class OkxPerpetualDerivative(PerpetualDerivativePyBase):
         self._trading_pairs = trading_pairs
         self._domain = domain
         self._last_trade_history_timestamp = None
+        self._contract_sizes = {}
 
-        super().__init__(client_config_map)
+        super().__init__(balance_asset_limit, rate_limits_share_pct)
 
     @property
     def authenticator(self) -> OkxPerpetualAuth:
@@ -118,23 +117,17 @@ class OkxPerpetualDerivative(PerpetualDerivativePyBase):
         return 120
 
     def _format_amount_to_size(self, trading_pair, amount: Decimal) -> Decimal:
-        trading_rule = self._trading_rules[trading_pair]
-        quanto_multiplier = Decimal(trading_rule.min_base_amount_increment)
-        size = amount / quanto_multiplier
-        return size
+        return amount / self._contract_sizes[trading_pair]
 
     def _format_size_to_amount(self, trading_pair, size: Decimal) -> Decimal:
-        trading_rule = self._trading_rules[trading_pair]
-        quanto_multiplier = Decimal(trading_rule.min_base_amount_increment)
-        amount = size * quanto_multiplier
-        return amount
+        return size * self._contract_sizes[trading_pair]
 
     def supported_order_types(self) -> List[OrderType]:
         """
         :return a list of OrderType supported by this connector
         """
         # TODO: Check if it's market or limit_maker
-        return [OrderType.LIMIT, OrderType.MARKET]
+        return [OrderType.LIMIT, OrderType.MARKET, OrderType.LIMIT_MAKER]
 
     def supported_position_modes(self) -> List[PositionMode]:
         return [PositionMode.ONEWAY, PositionMode.HEDGE]
@@ -197,6 +190,34 @@ class OkxPerpetualDerivative(PerpetualDerivativePyBase):
         super().start(clock, timestamp)
         if self._domain == CONSTANTS.DEFAULT_DOMAIN and self.is_trading_required:
             self.set_position_mode(PositionMode.HEDGE)
+
+    async def start_network(self):
+        """
+        Override to ensure pair-specific rate limits are registered before starting network.
+        This handles the case where trading pairs are added to _trading_pairs directly
+        (e.g., by market_data_provider) without going through add_trading_pair.
+        """
+        # Register rate limits for all current trading pairs before network starts
+        if self._trading_pairs:
+            pair_rate_limits = web_utils._build_private_pair_specific_rate_limits(self._trading_pairs)
+            self._throttler.add_rate_limits(pair_rate_limits)
+
+        await super().start_network()
+
+    async def add_trading_pair(self, trading_pair: str) -> bool:
+        """
+        Dynamically adds a trading pair to the OKX perpetual connector.
+        Overrides base method to register pair-specific rate limits before adding the pair.
+
+        :param trading_pair: the trading pair to add (e.g., "BTC-USDT")
+        :return: True if the pair was added successfully, False otherwise
+        """
+        # Register pair-specific rate limits for the new trading pair
+        pair_rate_limits = web_utils._build_private_pair_specific_rate_limits([trading_pair])
+        self._throttler.add_rate_limits(pair_rate_limits)
+
+        # Call the parent implementation
+        return await super().add_trading_pair(trading_pair)
 
     def _get_fee(self,
                  base_currency: str,
@@ -303,8 +324,7 @@ class OkxPerpetualDerivative(PerpetualDerivativePyBase):
         return final_result
 
     async def _get_last_traded_price(self, trading_pair: str) -> float:
-        exchange_symbol = await self.exchange_symbol_associated_to_pair(trading_pair)
-        params = {"uly": exchange_symbol}
+        params = {"uly": trading_pair, "instType": "SWAP"}
 
         resp_json = await self._api_get(
             path_url=CONSTANTS.REST_LATEST_SYMBOL_INFORMATION[CONSTANTS.ENDPOINT],
@@ -322,7 +342,7 @@ class OkxPerpetualDerivative(PerpetualDerivativePyBase):
             params=params,
         )
 
-        last_traded_prices = {ticker["instId"]: float(ticker["last"]) for ticker in resp_json["data"]}
+        last_traded_prices = {ticker["instId"].replace("-SWAP", ""): float(ticker["last"]) for ticker in resp_json["data"]}
         return last_traded_prices
 
     async def _update_balances(self):
@@ -384,6 +404,7 @@ class OkxPerpetualDerivative(PerpetualDerivativePyBase):
                 if okx_utils.is_exchange_information_valid(rule):
                     trading_pair = combine_to_hb_trading_pair(rule['ctValCcy'], rule['settleCcy'])
                     contract_size = Decimal(rule["ctVal"])
+                    self._contract_sizes[trading_pair] = contract_size
                     minimum_order_quantity = Decimal(rule["minSz"])
                     min_order_size = minimum_order_quantity * contract_size
 

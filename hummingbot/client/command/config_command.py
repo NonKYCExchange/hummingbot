@@ -49,9 +49,6 @@ no_restart_pmm_keys = ["order_amount",
 client_configs_to_display = ["autofill_import",
                              "kill_switch_mode",
                              "kill_switch_rate",
-                             "telegram_mode",
-                             "telegram_token",
-                             "telegram_chat_id",
                              "mqtt_bridge",
                              "mqtt_host",
                              "mqtt_port",
@@ -67,12 +64,11 @@ client_configs_to_display = ["autofill_import",
                              "mqtt_autostart",
                              "instance_id",
                              "send_error_logs",
-                             "pmm_script_mode",
-                             "pmm_script_file_path",
                              "ethereum_chain_name",
                              "gateway",
                              "gateway_api_host",
                              "gateway_api_port",
+                             "gateway_use_ssl",
                              "rate_oracle_source",
                              "extra_tokens",
                              "fetch_pairs_from_all_exchanges",
@@ -246,7 +242,7 @@ class ConfigCommand:
                 if client_config_key:
                     config_map = self.client_config_map
                     file_path = CLIENT_CONFIG_PATH
-                elif self.strategy is not None:
+                elif self.trading_core.strategy is not None:
                     self.notify("Configuring the strategy while it is running is not currently supported.")
                     return
                 else:
@@ -320,12 +316,12 @@ class ConfigCommand:
         for config in missings:
             self.notify(f"{config.key}: {str(config.value)}")
         if (
-                isinstance(self.strategy, PureMarketMakingStrategy) or
-                isinstance(self.strategy, PerpetualMarketMakingStrategy)
+                isinstance(self.trading_core.strategy, PureMarketMakingStrategy) or
+                isinstance(self.trading_core.strategy, PerpetualMarketMakingStrategy)
         ):
-            updated = ConfigCommand.update_running_mm(self.strategy, key, config_var.value)
+            updated = ConfigCommand.update_running_mm(self.trading_core.strategy, key, config_var.value)
             if updated:
-                self.notify(f"\nThe current {self.strategy_name} strategy has been updated "
+                self.notify(f"\nThe current {self.trading_core.strategy_name} strategy has been updated "
                             f"to reflect the new configuration.")
 
     async def _prompt_missing_configs(self,  # type: HummingbotApplication
@@ -476,7 +472,7 @@ class ConfigCommand:
                 self.notify("Inventory price not updated due to bad input")
                 return
 
-            with self.trade_fill_db.get_new_session() as session:
+            with self.trading_core.trade_fill_db.get_new_session() as session:
                 with session.begin():
                     InventoryCost.add_volume(
                         session,

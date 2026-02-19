@@ -4,8 +4,6 @@ from decimal import Decimal
 from typing import Awaitable, Dict
 from unittest.mock import patch
 
-from hummingbot.client.config.client_config_map import ClientConfigMap
-from hummingbot.client.config.config_helpers import ClientConfigAdapter
 from hummingbot.connector.client_order_tracker import ClientOrderTracker
 from hummingbot.connector.exchange_base import ExchangeBase
 from hummingbot.core.data_type.common import OrderType, TradeType
@@ -48,7 +46,7 @@ class ClientOrderTrackerUnitTest(unittest.TestCase):
         super().setUp()
         self.log_records = []
 
-        self.connector = MockExchange(client_config_map=ClientConfigAdapter(ClientConfigMap()))
+        self.connector = MockExchange()
         self.connector._set_current_timestamp(1640000000.0)
         self.tracker = ClientOrderTracker(connector=self.connector)
 
@@ -343,7 +341,7 @@ class ClientOrderTrackerUnitTest(unittest.TestCase):
             self._is_logged(
                 "INFO",
                 f"Created {order.order_type.name} {order.trade_type.name} order {order.client_order_id} for "
-                f"{order.amount} {order.trading_pair}.",
+                f"{order.amount} {order.trading_pair} at {order.price}.",
             )
         )
 
@@ -394,7 +392,7 @@ class ClientOrderTrackerUnitTest(unittest.TestCase):
             self._is_logged(
                 "INFO",
                 f"Created {order.order_type.name} {order.trade_type.name} order {order.client_order_id} for "
-                f"{order.amount} {order.trading_pair}.",
+                f"{order.amount} {order.trading_pair} at {order.price}.",
             )
         )
 
@@ -638,7 +636,7 @@ class ClientOrderTrackerUnitTest(unittest.TestCase):
             self._is_logged(
                 "INFO",
                 f"The {order.trade_type.name.upper()} order {order.client_order_id} amounting to "
-                f"{trade_filled_amount}/{order.amount} {order.base_asset} has been filled.",
+                f"{trade_filled_amount}/{order.amount} {order.base_asset} has been filled at {trade_filled_price} {order.quote_asset}.",
             )
         )
 
@@ -690,7 +688,7 @@ class ClientOrderTrackerUnitTest(unittest.TestCase):
             self._is_logged(
                 "INFO",
                 f"The {order.trade_type.name.upper()} order {order.client_order_id} amounting to "
-                f"{order.amount}/{order.amount} {order.base_asset} has been filled.",
+                f"{order.amount}/{order.amount} {order.base_asset} has been filled at {order.price} {order.quote_asset}.",
             )
         )
 

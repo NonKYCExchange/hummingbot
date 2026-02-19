@@ -23,11 +23,15 @@ COPY scripts/ scripts-copy/
 COPY setup.py .
 COPY LICENSE .
 COPY README.md .
-COPY DATA_COLLECTION.md .
 
 # activate hummingbot env when entering the CT
 SHELL [ "/bin/bash", "-lc" ]
 RUN echo "conda activate hummingbot" >> ~/.bashrc
+
+COPY setup/pip_packages.txt /tmp/pip_packages.txt
+RUN python3 -m pip install --no-deps -r /tmp/pip_packages.txt && \
+    rm /tmp/pip_packages.txt
+
 
 RUN python3 setup.py build_ext --inplace -j 8 && \
     rm -rf build/ && \
@@ -51,7 +55,7 @@ LABEL date=${BUILD_DATE}
 # Set ENV variables
 ENV COMMIT_SHA=${COMMIT}
 ENV COMMIT_BRANCH=${BRANCH}
-ENV BUILD_DATE=${DATE}
+ENV BUILD_DATE=${BUILD_DATE}
 
 ENV INSTALLATION_TYPE=docker
 

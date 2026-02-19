@@ -2,12 +2,10 @@ import asyncio
 import json
 import unittest
 from typing import Any, Awaitable, Dict, Optional
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from bidict import bidict
 
-from hummingbot.client.config.client_config_map import ClientConfigMap
-from hummingbot.client.config.config_helpers import ClientConfigAdapter
 from hummingbot.connector.exchange.foxbit import foxbit_constants as CONSTANTS
 from hummingbot.connector.exchange.foxbit.foxbit_api_user_stream_data_source import FoxbitAPIUserStreamDataSource
 from hummingbot.connector.exchange.foxbit.foxbit_auth import FoxbitAuth
@@ -18,6 +16,7 @@ from hummingbot.core.api_throttler.async_throttler import AsyncThrottler
 from hummingbot.core.web_assistant.ws_assistant import WSAssistant
 
 
+@patch("hummingbot.connector.exchange.foxbit.foxbit_api_user_stream_data_source.FoxbitAPIUserStreamDataSource._sleep", new_callable=AsyncMock)
 class FoxbitUserStreamDataSourceUnitTests(unittest.TestCase):
     # the level is required to receive logs from the data source logger
     level = 0
@@ -50,9 +49,7 @@ class FoxbitUserStreamDataSourceUnitTests(unittest.TestCase):
         self.time_synchronizer = TimeSynchronizer()
         self.time_synchronizer.add_time_offset_ms_sample(0)
 
-        client_config_map = ClientConfigAdapter(ClientConfigMap())
         self.connector = FoxbitExchange(
-            client_config_map=client_config_map,
             foxbit_api_key="testAPIKey",
             foxbit_api_secret="testSecret",
             foxbit_user_id="testUserId",
@@ -127,10 +124,44 @@ class FoxbitUserStreamDataSourceUnitTests(unittest.TestCase):
         }
         return resp
 
-    def test_user_stream_properties(self):
+    def test_user_stream_properties(self, mock_sleep):
         self.assertEqual(self.data_source.ready, self.data_source._user_stream_data_source_initialized)
 
-    async def test_run_ws_assistant(self):
+    @patch("hummingbot.connector.exchange.foxbit.foxbit_api_user_stream_data_source.web_utils.websocket_url", return_value="wss://test")
+    @patch("hummingbot.connector.exchange.foxbit.foxbit_api_user_stream_data_source.WSAssistant")
+    def test_connected_websocket_assistant_success(self, mock_ws_assistant_cls, mock_websocket_url, mock_sleep):
+        # Arrange
+        mock_ws = AsyncMock()
+        mock_ws.connect = AsyncMock()
+        mock_ws.send = AsyncMock()
+        # Simulate authenticated response
+        mock_ws.receive = AsyncMock(return_value=MagicMock(data={"o": '{"Authenticated": True}'}))
+        mock_ws_assistant_cls.return_value = mock_ws
+
+        mock_api_factory = MagicMock()
+        mock_api_factory.get_ws_assistant = AsyncMock(return_value=mock_ws)
+
+        auth = MagicMock()
+        auth.get_ws_authenticate_payload.return_value = {"test": "payload"}
+
+        data_source = FoxbitAPIUserStreamDataSource(
+            auth=auth,
+            trading_pairs=["COINALPHA-HBOT"],
+            connector=MagicMock(),
+            api_factory=mock_api_factory,
+            domain="com"
+        )
+
+        # Act
+        ws = self.async_run_with_timeout(data_source._connected_websocket_assistant())
+
+        # Assert
+        self.assertIs(ws, mock_ws)
+        mock_ws.connect.assert_awaited_once()
+        mock_ws.send.assert_awaited()
+        mock_ws.receive.assert_awaited()
+
+    async def test_run_ws_assistant(self, mock_sleep):
         ws: WSAssistant = await self.data_source._connected_websocket_assistant()
         self.assertIsNotNone(ws)
         await self.data_source._subscribe_channels(ws)

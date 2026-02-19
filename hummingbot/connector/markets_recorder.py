@@ -35,17 +35,20 @@ from hummingbot.core.event.events import (
     SellOrderCreatedEvent,
 )
 from hummingbot.logger import HummingbotLogger
+from hummingbot.model.controllers import Controllers
 from hummingbot.model.executors import Executors
 from hummingbot.model.funding_payment import FundingPayment
 from hummingbot.model.market_data import MarketData
 from hummingbot.model.market_state import MarketState
 from hummingbot.model.order import Order
 from hummingbot.model.order_status import OrderStatus
+from hummingbot.model.position import Position
 from hummingbot.model.range_position_collected_fees import RangePositionCollectedFees
 from hummingbot.model.range_position_update import RangePositionUpdate
 from hummingbot.model.sql_connection_manager import SQLConnectionManager
 from hummingbot.model.trade_fill import TradeFill
-from hummingbot.smart_components.models.executors_info import ExecutorInfo
+from hummingbot.strategy_v2.controllers.controller_base import ControllerConfigBase
+from hummingbot.strategy_v2.models.executors_info import ExecutorInfo
 
 
 class MarketsRecorder:
@@ -100,12 +103,9 @@ class MarketsRecorder:
         self._fail_order_forwarder: SourceInfoEventForwarder = SourceInfoEventForwarder(self._did_fail_order)
         self._complete_order_forwarder: SourceInfoEventForwarder = SourceInfoEventForwarder(self._did_complete_order)
         self._expire_order_forwarder: SourceInfoEventForwarder = SourceInfoEventForwarder(self._did_expire_order)
-        self._funding_payment_forwarder: SourceInfoEventForwarder = SourceInfoEventForwarder(
-            self._did_complete_funding_payment)
-        self._update_range_position_forwarder: SourceInfoEventForwarder = SourceInfoEventForwarder(
-            self._did_update_range_position)
-        self._close_range_position_forwarder: SourceInfoEventForwarder = SourceInfoEventForwarder(
-            self._did_close_position)
+        self._funding_payment_forwarder: SourceInfoEventForwarder = SourceInfoEventForwarder(self._did_complete_funding_payment)
+        self._update_range_position_forwarder: SourceInfoEventForwarder = SourceInfoEventForwarder(self._did_update_range_position)
+        self._close_range_position_forwarder: SourceInfoEventForwarder = SourceInfoEventForwarder(self._did_close_position)
 
         self._event_pairs: List[Tuple[MarketEvent, SourceInfoEventForwarder]] = [
             (MarketEvent.BuyOrderCreated, self._create_order_forwarder),
@@ -183,6 +183,36 @@ class MarketsRecorder:
         if self._market_data_collection_config.market_data_collection_enabled:
             self._start_market_data_recording()
 
+    def add_market(self, market: ConnectorBase):
+        """Add a new market/connector dynamically."""
+        if market not in self._markets:
+            self._markets.append(market)
+
+            # Add trade fills from recorder
+            trade_fills = self.get_trades_for_config(self._config_file_path, 2000)
+            market.add_trade_fills_from_market_recorder({TradeFillOrderDetails(tf.market,
+                                                                               tf.exchange_trade_id,
+                                                                               tf.symbol) for tf in trade_fills
+                                                         if tf.market == market.name})
+
+            # Add exchange order IDs
+            exchange_order_ids = self.get_orders_for_config_and_market(self._config_file_path, market, True, 2000)
+            market.add_exchange_order_ids_from_market_recorder({o.exchange_order_id: o.id for o in exchange_order_ids})
+
+            # Add event listeners
+            for event_pair in self._event_pairs:
+                market.add_listener(event_pair[0], event_pair[1])
+
+    def remove_market(self, market: ConnectorBase):
+        """Remove a market/connector dynamically."""
+        if market in self._markets:
+            # Remove event listeners
+            for event_pair in self._event_pairs:
+                market.remove_listener(event_pair[0], event_pair[1])
+
+            # Remove from markets list
+            self._markets.remove(market)
+
     def stop(self):
         for market in self._markets:
             for event_pair in self._event_pairs:
@@ -193,16 +223,56 @@ class MarketsRecorder:
     def store_or_update_executor(self, executor):
         with self._sql_manager.get_new_session() as session:
             existing_executor = session.query(Executors).filter(Executors.id == executor.config.id).one_or_none()
-
+            serialized_config = executor.executor_info.model_dump_json()
+            executor_dict = json.loads(serialized_config)
             if existing_executor:
                 # Update existing executor
-                for attr, value in vars(executor).items():
+                for attr, value in executor_dict.items():
                     setattr(existing_executor, attr, value)
             else:
                 # Insert new executor
-                serialized_config = executor.executor_info.json()
-                new_executor = Executors(**json.loads(serialized_config))
+                new_executor = Executors(**executor_dict)
                 session.add(new_executor)
+            session.commit()
+
+    def store_position(self, position: Position):
+        with self._sql_manager.get_new_session() as session:
+            session.add(position)
+            session.commit()
+
+    def update_or_store_position(self, position: Position):
+        with self._sql_manager.get_new_session() as session:
+            # Check if a position already exists for this controller, connector, trading pair, and side
+            existing_position = session.query(Position).filter(
+                Position.controller_id == position.controller_id,
+                Position.connector_name == position.connector_name,
+                Position.trading_pair == position.trading_pair,
+                Position.side == position.side
+            ).first()
+
+            if existing_position:
+                # Update the existing position
+                existing_position.timestamp = position.timestamp
+                existing_position.volume_traded_quote = position.volume_traded_quote
+                existing_position.amount = position.amount
+                existing_position.breakeven_price = position.breakeven_price
+                existing_position.unrealized_pnl_quote = position.unrealized_pnl_quote
+                existing_position.cum_fees_quote = position.cum_fees_quote
+            else:
+                # Insert new position
+                session.add(position)
+
+            session.commit()
+
+    def store_controller_config(self, controller_config: ControllerConfigBase):
+        with self._sql_manager.get_new_session() as session:
+            config = json.loads(controller_config.json())
+            base_columns = ["id", "timestamp", "type"]
+            controller = Controllers(id=config["id"],
+                                     timestamp=time.time(),
+                                     type=config["controller_type"],
+                                     config={k: v for k, v in config.items() if k not in base_columns})
+            session.add(controller)
             session.commit()
 
     def get_executors_by_ids(self, executor_ids: List[str]):
@@ -214,6 +284,26 @@ class MarketsRecorder:
         with self._sql_manager.get_new_session() as session:
             executors = session.query(Executors).filter(Executors.controller_id == controller_id).all()
             return [executor.to_executor_info() for executor in executors]
+
+    def get_all_executors(self) -> List[ExecutorInfo]:
+        with self._sql_manager.get_new_session() as session:
+            executors = session.query(Executors).all()
+            return [executor.to_executor_info() for executor in executors]
+
+    def get_positions_by_ids(self, position_ids: List[str]) -> List[Position]:
+        with self._sql_manager.get_new_session() as session:
+            positions = session.query(Position).filter(Position.id.in_(position_ids)).all()
+            return positions
+
+    def get_positions_by_controller(self, controller_id: str = None) -> List[Position]:
+        with self._sql_manager.get_new_session() as session:
+            positions = session.query(Position).filter(Position.controller_id == controller_id).all()
+            return positions
+
+    def get_all_positions(self) -> List[Position]:
+        with self._sql_manager.get_new_session() as session:
+            positions = session.query(Position).all()
+            return positions
 
     def get_orders_for_config_and_market(self, config_file_path: str, market: ConnectorBase,
                                          with_exchange_order_id_present: Optional[bool] = False,
@@ -376,7 +466,6 @@ class MarketsRecorder:
                 market.add_trade_fills_from_market_recorder({TradeFillOrderDetails(trade_fill_record.market,
                                                                                    trade_fill_record.exchange_trade_id,
                                                                                    trade_fill_record.symbol)})
-                self.append_to_csv(trade_fill_record)
 
     def _did_complete_funding_payment(self,
                                       event_tag: int,

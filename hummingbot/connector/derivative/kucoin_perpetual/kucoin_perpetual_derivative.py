@@ -1,6 +1,6 @@
 import asyncio
 from decimal import Decimal
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import pandas as pd
 from bidict import ValueDuplicationError, bidict
@@ -31,9 +31,6 @@ from hummingbot.core.utils.estimate_fee import build_perpetual_trade_fee
 from hummingbot.core.web_assistant.connections.data_types import RESTMethod
 from hummingbot.core.web_assistant.web_assistants_factory import WebAssistantsFactory
 
-if TYPE_CHECKING:
-    from hummingbot.client.config.config_helpers import ClientConfigAdapter
-
 s_decimal_NaN = Decimal("nan")
 s_decimal_0 = Decimal(0)
 
@@ -43,7 +40,8 @@ class KucoinPerpetualDerivative(PerpetualDerivativePyBase):
 
     def __init__(
             self,
-            client_config_map: "ClientConfigAdapter",
+            balance_asset_limit: Optional[Dict[str, Dict[str, Decimal]]] = None,
+            rate_limits_share_pct: Decimal = Decimal("100"),
             kucoin_perpetual_api_key: str = None,
             kucoin_perpetual_secret_key: str = None,
             kucoin_perpetual_passphrase: str = None,
@@ -60,7 +58,7 @@ class KucoinPerpetualDerivative(PerpetualDerivativePyBase):
         self._domain = domain
         self._last_trade_history_timestamp = None
 
-        super().__init__(client_config_map)
+        super().__init__(balance_asset_limit, rate_limits_share_pct)
 
     @property
     def name(self) -> str:
@@ -154,14 +152,7 @@ class KucoinPerpetualDerivative(PerpetualDerivativePyBase):
 
     def _is_request_exception_related_to_time_synchronizer(self, request_exception: Exception):
         error_description = str(request_exception)
-        ts_error_target_str = self._format_ret_code_for_print(ret_code=CONSTANTS.RET_CODE_AUTH_TIMESTAMP_ERROR)
-        param_error_target_str = (
-            "KC-API-TIMESTAMP Invalid -- Time differs from server time by more than 5 seconds"
-        )
-        is_time_synchronizer_related = (
-            ts_error_target_str in error_description or param_error_target_str in error_description
-        )
-        return is_time_synchronizer_related
+        return CONSTANTS.RET_CODE_AUTH_TIMESTAMP_ERROR in error_description and "KC-API-TIMESTAMP" in error_description
 
     async def _place_cancel(self, order_id: str, tracked_order: InFlightOrder):
         cancel_result = await self._api_delete(

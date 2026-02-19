@@ -1,5 +1,4 @@
 import asyncio
-import base64
 import re
 from decimal import Decimal
 from test.hummingbot.connector.exchange.injective_v2.programmable_query_executor import ProgrammableQueryExecutor
@@ -8,13 +7,12 @@ from unittest import TestCase
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from bidict import bidict
-from pyinjective.composer import Composer
-from pyinjective.core.market import SpotMarket
+from pyinjective.composer_v2 import Composer
+from pyinjective.core.market_v2 import SpotMarket
 from pyinjective.core.token import Token
 from pyinjective.wallet import Address, PrivateKey
 
-from hummingbot.client.config.client_config_map import ClientConfigMap
-from hummingbot.client.config.config_helpers import ClientConfigAdapter
+from hummingbot.connector.exchange.injective_v2.injective_market import InjectiveToken
 from hummingbot.connector.exchange.injective_v2.injective_v2_api_order_book_data_source import (
     InjectiveV2APIOrderBookDataSource,
 )
@@ -50,8 +48,6 @@ class InjectiveV2APIOrderBookDataSourceTests(TestCase):
         self.async_tasks = []
         asyncio.set_event_loop(self.async_loop)
 
-        client_config_map = ClientConfigAdapter(ClientConfigMap())
-
         _, grantee_private_key = PrivateKey.generate()
         _, granter_private_key = PrivateKey.generate()
 
@@ -71,7 +67,6 @@ class InjectiveV2APIOrderBookDataSourceTests(TestCase):
         )
 
         self.connector = InjectiveV2Exchange(
-            client_config_map=client_config_map,
             connector_configuration=injective_config,
             trading_pairs=[self.trading_pair],
         )
@@ -86,6 +81,11 @@ class InjectiveV2APIOrderBookDataSourceTests(TestCase):
             ".InjectiveGranteeDataSource.initialize_trading_account"
         )
         self.initialize_trading_account_patch.start()
+        self._initialize_timeout_height_patch = patch(
+            "hummingbot.connector.exchange.injective_v2.data_sources.injective_grantee_data_source"
+            ".AsyncClient.sync_timeout_height"
+        )
+        self._initialize_timeout_height_patch.start()
 
         self.query_executor = ProgrammableQueryExecutor()
         self.connector._data_source._query_executor = self.query_executor
@@ -103,6 +103,7 @@ class InjectiveV2APIOrderBookDataSourceTests(TestCase):
 
     def tearDown(self) -> None:
         self.async_run_with_timeout(self.data_source._data_source.stop())
+        self._initialize_timeout_height_patch.stop()
         self.initialize_trading_account_patch.stop()
         for task in self.async_tasks:
             task.cancel()
@@ -155,18 +156,13 @@ class InjectiveV2APIOrderBookDataSourceTests(TestCase):
         self.query_executor._tokens_responses.put_nowait(
             {token.symbol: token for token in [market.base_token, market.quote_token]}
         )
-        base_decimals = market.base_token.decimals
-        quote_decimals = market.quote_token.decimals
 
         order_book_snapshot = {
-            "buys": [(Decimal("9487") * Decimal(f"1e{quote_decimals-base_decimals}"),
-                      Decimal("336241") * Decimal(f"1e{base_decimals}"),
-                      1640001112223)],
-            "sells": [(Decimal("9487.5") * Decimal(f"1e{quote_decimals-base_decimals}"),
-                      Decimal("522147") * Decimal(f"1e{base_decimals}"),
-                      1640001112224)],
+            "buys": [(InjectiveToken.convert_value_to_extended_decimal_format(Decimal("9487")),
+                      InjectiveToken.convert_value_to_extended_decimal_format(Decimal("336241")))],
+            "sells": [(InjectiveToken.convert_value_to_extended_decimal_format(Decimal("9487.5")),
+                      InjectiveToken.convert_value_to_extended_decimal_format(Decimal("522147")))],
             "sequence": 512,
-            "timestamp": 1650001112223,
         }
 
         self.query_executor._spot_order_book_responses.put_nowait(order_book_snapshot)
@@ -212,6 +208,7 @@ class InjectiveV2APIOrderBookDataSourceTests(TestCase):
         trade_data = {
             "blockHeight": "20583",
             "blockTime": "1640001112223",
+            "gasPrice": "160000000.000000000000000000",
             "subaccountDeposits": [],
             "spotOrderbookUpdates": [],
             "derivativeOrderbookUpdates": [],
@@ -225,7 +222,7 @@ class InjectiveV2APIOrderBookDataSourceTests(TestCase):
                     "price": "7701000",
                     "subaccountId": "0x7998ca45575408f8b4fa354fe615abf3435cf1a7000000000000000000000000",  # noqa: mock
                     "fee": "-249974460000000000000000",
-                    "orderHash": base64.b64encode(bytes.fromhex(order_hash.replace("0x", ""))).decode(),
+                    "orderHash": order_hash,
                     "feeRecipientAddress": "inj10xvv532h2sy03d86x487v9dt7dp4eud8fe2qv5",  # noqa: mock
                     "cid": "cid1",
                     "tradeId": "7959737_3_0",
@@ -247,7 +244,7 @@ class InjectiveV2APIOrderBookDataSourceTests(TestCase):
 
         self.assertTrue(
             self.is_logged(
-                "WARNING", re.compile(r"^Invalid chain stream event format \(.*")
+                "WARNING", re.compile(r"^Invalid chain stream event format\. Event:.*")
             )
         )
 
@@ -265,14 +262,13 @@ class InjectiveV2APIOrderBookDataSourceTests(TestCase):
         self.query_executor._tokens_responses.put_nowait(
             {token.symbol: token for token in [market.base_token, market.quote_token]}
         )
-        base_decimals = market.base_token.decimals
-        quote_decimals = market.quote_token.decimals
 
         order_hash = "0x070e2eb3d361c8b26eae510f481bed513a1fb89c0869463a387cfa7995a27043"  # noqa: mock
 
         trade_data = {
             "blockHeight": "20583",
             "blockTime": "1640001112223",
+            "gasPrice": "160000000.000000000000000000",
             "subaccountDeposits": [],
             "spotOrderbookUpdates": [],
             "derivativeOrderbookUpdates": [],
@@ -286,7 +282,7 @@ class InjectiveV2APIOrderBookDataSourceTests(TestCase):
                     "price": "7701000",
                     "subaccountId": "0x7998ca45575408f8b4fa354fe615abf3435cf1a7000000000000000000000000",  # noqa: mock
                     "fee": "-249974460000000000000000",
-                    "orderHash": base64.b64encode(bytes.fromhex(order_hash.replace("0x", ""))).decode(),
+                    "orderHash": order_hash,
                     "feeRecipientAddress": "inj10xvv532h2sy03d86x487v9dt7dp4eud8fe2qv5",  # noqa: mock
                     "cid": "cid1",
                     "tradeId": "7959737_3_0",
@@ -307,8 +303,8 @@ class InjectiveV2APIOrderBookDataSourceTests(TestCase):
 
         msg: OrderBookMessage = self.async_run_with_timeout(msg_queue.get())
 
-        expected_price = Decimal(trade_data["spotTrades"][0]["price"]) * Decimal(f"1e{base_decimals-quote_decimals-18}")
-        expected_amount = Decimal(trade_data["spotTrades"][0]["quantity"]) * Decimal(f"1e{-base_decimals-18}")
+        expected_price = (Decimal(trade_data["spotTrades"][0]["price"]) * Decimal("1e-18"))
+        expected_amount = (Decimal(trade_data["spotTrades"][0]["quantity"]) * Decimal("1e-18"))
         expected_trade_id = trade_data["spotTrades"][0]["tradeId"]
         self.assertEqual(OrderBookMessageType.TRADE, msg.type)
         self.assertEqual(expected_trade_id, msg.trade_id)
@@ -343,6 +339,7 @@ class InjectiveV2APIOrderBookDataSourceTests(TestCase):
         order_book_data = {
             "blockHeight": "20583",
             "blockTime": "1640001112223",
+            "gasPrice": "160000000.000000000000000000",
             "subaccountDeposits": [],
             "spotOrderbookUpdates": [
                 {
@@ -388,7 +385,7 @@ class InjectiveV2APIOrderBookDataSourceTests(TestCase):
 
         self.assertTrue(
             self.is_logged(
-                "WARNING", re.compile(r"^Invalid chain stream event format \(.*")
+                "WARNING", re.compile(r"^Invalid chain stream event format\. Event:.*")
             )
         )
 
@@ -406,12 +403,11 @@ class InjectiveV2APIOrderBookDataSourceTests(TestCase):
         self.query_executor._tokens_responses.put_nowait(
             {token.symbol: token for token in [market.base_token, market.quote_token]}
         )
-        base_decimals = market.base_token.decimals
-        quote_decimals = market.quote_token.decimals
 
         order_book_data = {
             "blockHeight": "20583",
             "blockTime": "1640001112223",
+            "gasPrice": "160000000.000000000000000000",
             "subaccountDeposits": [],
             "spotOrderbookUpdates": [
                 {
@@ -420,18 +416,18 @@ class InjectiveV2APIOrderBookDataSourceTests(TestCase):
                         "marketId": self.market_id,
                         "buyLevels": [
                             {
-                                "p": "7684000",
-                                "q": "4578787000000000000000000000000000000000"
+                                "p": "7684000000000000000",
+                                "q": "4578787000000000000000"
                             },
                             {
-                                "p": "7685000",
-                                "q": "4412340000000000000000000000000000000000"
+                                "p": "7685000000000000000",
+                                "q": "4412340000000000000000"
                             },
                         ],
                         "sellLevels": [
                             {
-                                "p": "7723000",
-                                "q": "3478787000000000000000000000000000000000"
+                                "p": "7723000000000000000",
+                                "q": "3478787000000000000000"
                             },
                         ],
                     }
@@ -465,14 +461,18 @@ class InjectiveV2APIOrderBookDataSourceTests(TestCase):
         asks = msg.asks
         self.assertEqual(2, len(bids))
 
-        first_bid_price = Decimal(order_book_data["spotOrderbookUpdates"][0]["orderbook"]["buyLevels"][1]["p"]) * Decimal(f"1e{base_decimals-quote_decimals-18}")
-        first_bid_quantity = Decimal(order_book_data["spotOrderbookUpdates"][0]["orderbook"]["buyLevels"][1]["q"]) * Decimal(f"1e{-base_decimals-18}")
+        first_bid_price = (Decimal(order_book_data["spotOrderbookUpdates"][0]["orderbook"]["buyLevels"][1]["p"])
+                           * Decimal("1e-18"))
+        first_bid_quantity = (Decimal(order_book_data["spotOrderbookUpdates"][0]["orderbook"]["buyLevels"][1]["q"])
+                              * Decimal("1e-18"))
         self.assertEqual(float(first_bid_price), bids[0].price)
         self.assertEqual(float(first_bid_quantity), bids[0].amount)
         self.assertEqual(expected_update_id, bids[0].update_id)
         self.assertEqual(1, len(asks))
-        first_ask_price = Decimal(order_book_data["spotOrderbookUpdates"][0]["orderbook"]["sellLevels"][0]["p"]) * Decimal(f"1e{base_decimals-quote_decimals-18}")
-        first_ask_quantity = Decimal(order_book_data["spotOrderbookUpdates"][0]["orderbook"]["sellLevels"][0]["q"]) * Decimal(f"1e{-base_decimals-18}")
+        first_ask_price = (Decimal(order_book_data["spotOrderbookUpdates"][0]["orderbook"]["sellLevels"][0]["p"])
+                           * Decimal("1e-18"))
+        first_ask_quantity = (Decimal(order_book_data["spotOrderbookUpdates"][0]["orderbook"]["sellLevels"][0]["q"])
+                              * Decimal("1e-18"))
         self.assertEqual(float(first_ask_price), asks[0].price)
         self.assertEqual(float(first_ask_quantity), asks[0].amount)
         self.assertEqual(expected_update_id, asks[0].update_id)
@@ -486,6 +486,7 @@ class InjectiveV2APIOrderBookDataSourceTests(TestCase):
             decimals=18,
             logo="https://static.alchemyapi.io/images/assets/7226.png",
             updated=1687190809715,
+            unique_symbol="",
         )
         quote_native_token = Token(
             name="Quote Asset",
@@ -495,6 +496,7 @@ class InjectiveV2APIOrderBookDataSourceTests(TestCase):
             decimals=6,
             logo="https://static.alchemyapi.io/images/assets/825.png",
             updated=1687190809716,
+            unique_symbol="",
         )
 
         native_market = SpotMarket(
@@ -506,8 +508,9 @@ class InjectiveV2APIOrderBookDataSourceTests(TestCase):
             maker_fee_rate=Decimal("-0.0001"),
             taker_fee_rate=Decimal("0.001"),
             service_provider_fee=Decimal("0.4"),
-            min_price_tick_size=Decimal("0.000000000000001"),
-            min_quantity_tick_size=Decimal("1000000000000000"),
+            min_price_tick_size=Decimal("0.0001"),
+            min_quantity_tick_size=Decimal("0.001"),
+            min_notional=Decimal("0.000001"),
         )
 
         return {native_market.id: native_market}

@@ -56,9 +56,8 @@ class TestVertexExchange(unittest.TestCase):
 
         # NOTE: RANDOM KEYS GENERATED JUST FOR UNIT TESTS
         self.exchange = VertexExchange(
-            self.client_config_map,
-            "0x2162Db26939B9EAF0C5404217774d166056d31B5",  # noqa: mock
-            "5500eb16bf3692840e04fb6a63547b9a80b75d9cbb36b43ca5662127d4c19c83",  # noqa: mock
+            vertex_arbitrum_address="0x2162Db26939B9EAF0C5404217774d166056d31B5",  # noqa: mock
+            vertex_arbitrum_private_key="5500eb16bf3692840e04fb6a63547b9a80b75d9cbb36b43ca5662127d4c19c83",  # noqa: mock
             trading_pairs=[self.trading_pair],
             domain=self.domain,
         )
@@ -130,7 +129,7 @@ class TestVertexExchange(unittest.TestCase):
             {"product_id": 8, "symbol": "BNB-PERP"},
             {"product_id": 10, "symbol": "XRP-PERP"},
             {"product_id": 12, "symbol": "SOL-PERP"},
-            {"product_id": 14, "symbol": "MATIC-PERP"},
+            {"product_id": 14, "symbol": "POL-PERP"},
         ]
         return exchange_symbols
 
@@ -769,7 +768,8 @@ class TestVertexExchange(unittest.TestCase):
         self.assertEqual("ABC1", create_event.order_id)
 
         self.assertTrue(
-            self._is_logged("INFO", f"Created LIMIT BUY order ABC1 for {Decimal('100.000000')} {self.trading_pair}.")
+            self._is_logged("INFO", f"Created LIMIT BUY order ABC1 for {Decimal('100.000000')} {self.trading_pair} "
+                                    f"at {Decimal('10000.0000')}.")
         )
 
     @aioresponses()
@@ -821,7 +821,8 @@ class TestVertexExchange(unittest.TestCase):
 
         self.assertTrue(
             self._is_logged(
-                "INFO", f"Created LIMIT_MAKER BUY order ABC1 for {Decimal('100.000000')} {self.trading_pair}."
+                "INFO", f"Created LIMIT_MAKER BUY order ABC1 for {Decimal('100.000000')} {self.trading_pair} "
+                        f"at {Decimal('10000.0000')}."
             )
         )
 
@@ -873,7 +874,8 @@ class TestVertexExchange(unittest.TestCase):
         self.assertEqual("ABC1", create_event.order_id)
 
         self.assertTrue(
-            self._is_logged("INFO", f"Created MARKET SELL order ABC1 for {Decimal('100.000000')} {self.trading_pair}.")
+            self._is_logged("INFO", f"Created MARKET SELL order ABC1 for {Decimal('100.000000')} {self.trading_pair} "
+                                    f"at {Decimal('10000')}.")
         )
 
     @aioresponses()
@@ -905,15 +907,6 @@ class TestVertexExchange(unittest.TestCase):
         self.assertEqual(self.exchange.current_timestamp, failure_event.timestamp)
         self.assertEqual(OrderType.LIMIT, failure_event.order_type)
         self.assertEqual("ABC1", failure_event.order_id)
-
-        self.assertTrue(
-            self._is_logged(
-                "INFO",
-                f"Order ABC1 has failed. Order Update: OrderUpdate(trading_pair='{self.trading_pair}', "
-                f"update_timestamp={self.exchange.current_timestamp}, new_state={repr(OrderState.FAILED)}, "
-                f"client_order_id='ABC1', exchange_order_id=None, misc_updates=None)",
-            )
-        )
 
     @aioresponses()
     def test_create_order_fails_when_trading_rule_error_and_raises_failure_event(self, mock_api):
@@ -960,18 +953,8 @@ class TestVertexExchange(unittest.TestCase):
 
         self.assertTrue(
             self._is_logged(
-                "WARNING",
-                "Buy order amount 0.0001 is lower than the minimum order "
-                "size 0.01. The order will not be created, increase the "
-                "amount to be higher than the minimum order size."
-            )
-        )
-        self.assertTrue(
-            self._is_logged(
-                "INFO",
-                f"Order ABC1 has failed. Order Update: OrderUpdate(trading_pair='{self.trading_pair}', "
-                f"update_timestamp={self.exchange.current_timestamp}, new_state={repr(OrderState.FAILED)}, "
-                "client_order_id='ABC1', exchange_order_id=None, misc_updates=None)",
+                "NETWORK",
+                f"Error submitting buy LIMIT order to {self.exchange.name_cap} for 100.000000 {self.trading_pair} 10000.0000."
             )
         )
 
@@ -1406,7 +1389,7 @@ class TestVertexExchange(unittest.TestCase):
             self._is_logged(
                 "INFO",
                 f"The {order.trade_type.name} order {order.client_order_id} amounting to "
-                f"{fill_event.amount}/{order.amount} {order.base_asset} has been filled.",
+                f"{fill_event.amount}/{order.amount} {order.base_asset} has been filled at {Decimal('25000')} USDC.",
             )
         )
 

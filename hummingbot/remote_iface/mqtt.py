@@ -34,7 +34,6 @@ from hummingbot.remote_iface.messages import (
     MQTT_STATUS_CODE,
     BalanceLimitCommandMessage,
     BalancePaperCommandMessage,
-    CommandShortcutMessage,
     ConfigCommandMessage,
     ExternalEventMessage,
     HistoryCommandMessage,
@@ -60,7 +59,6 @@ class CommandTopicSpecs:
     HISTORY: str = '/history'
     BALANCE_LIMIT: str = '/balance/limit'
     BALANCE_PAPER: str = '/balance/paper'
-    COMMAND_SHORTCUT: str = '/command_shortcuts'
 
 
 class TopicSpecs:
@@ -99,7 +97,6 @@ class MQTTCommands:
         self._history_uri = f'{topic_prefix}{TopicSpecs.COMMANDS.HISTORY}'
         self._balance_limit_uri = f'{topic_prefix}{TopicSpecs.COMMANDS.BALANCE_LIMIT}'
         self._balance_paper_uri = f'{topic_prefix}{TopicSpecs.COMMANDS.BALANCE_PAPER}'
-        self._shortcuts_uri = f'{topic_prefix}{TopicSpecs.COMMANDS.COMMAND_SHORTCUT}'
 
         self._init_commands()
 
@@ -143,11 +140,6 @@ class MQTTCommands:
             rpc_name=self._balance_paper_uri,
             msg_type=BalancePaperCommandMessage,
             on_request=self._on_cmd_balance_paper
-        )
-        self._node.create_rpc(
-            rpc_name=self._shortcuts_uri,
-            msg_type=CommandShortcutMessage,
-            on_request=self._on_cmd_command_shortcut
         )
 
     def _on_cmd_start(self, msg: StartCommandMessage.Request):
@@ -344,16 +336,6 @@ class MQTTCommands:
                 [msg.asset, msg.amount]
             )
             response.data = data
-        except Exception as e:
-            response.status = MQTT_STATUS_CODE.ERROR
-            response.msg = str(e)
-        return response
-
-    def _on_cmd_command_shortcut(self, msg: CommandShortcutMessage.Request):
-        response = CommandShortcutMessage.Response()
-        try:
-            for param in msg.params:
-                response.success.append(self._hb_app._handle_shortcut(param))
         except Exception as e:
             response.status = MQTT_STATUS_CODE.ERROR
             response.msg = str(e)
@@ -720,7 +702,7 @@ class MQTTGateway(Node):
 
     def start_market_events_fw(self):
         # Must be called after loading the strategy.
-        # HummingbotApplication._initialize_markets() must be be called before
+        # Markets must be initialized via TradingCore before calling this method
         if self._hb_app.client_config_map.mqtt_bridge.mqtt_events:
             self._market_events = MQTTMarketEventForwarder(self._hb_app, self)
             if self.state == NodeState.RUNNING:
@@ -932,7 +914,7 @@ class MQTTExternalEvents:
         )
         self._listeners: Dict[
             str,
-            List[Callable[ExternalEventMessage, str], None]
+            List[Callable[[ExternalEventMessage], str], None]
         ] = {'*': []}
 
     def _event_uri_to_name(self, topic: str) -> str:
@@ -1142,3 +1124,66 @@ class ExternalTopicFactory:
     @classmethod
     def remove_listener(cls, listener):
         return ETopicListenerFactory.remove(listener)
+
+
+class ETopicPublisher:
+    def __init__(self,
+                 topic: str,
+                 use_bot_prefix: Optional[bool] = False):
+        self._node = MQTTGateway.main()
+        if self._node is None:
+            raise Exception('MQTT Gateway not yet initialized')
+        self._topic_prefix = TopicSpecs.PREFIX.format(
+            namespace=self._node.namespace,
+            instance_id=self._node._hb_app.instance_id
+        )
+        if use_bot_prefix:
+            self._topic = f'{self._topic_prefix}/{topic}'
+        else:
+            self._topic = topic
+        self._pub = self._node.create_mpublisher()
+        if self._node.state == NodeState.RUNNING:
+            self._pub.run()
+
+    def send(self, msg: Dict[str, Any]):
+        if threading.current_thread() != threading.main_thread():  # pragma: no cover
+            asyncio.get_event_loop().call_soon_threadsafe(self.send, msg)
+            return
+        self._pub.publish(msg, self._topic)
+
+    def __call__(self, msg: Dict[str, Any]):
+        self.send(msg)
+
+
+class EMTopicPublisher:
+    def __init__(self,
+                 use_bot_prefix: Optional[bool] = False):
+        self._use_bot_prefix = use_bot_prefix
+        self._node = MQTTGateway.main()
+        if self._node is None:
+            raise Exception('MQTT Gateway not yet initialized')
+        self._topic_prefix = TopicSpecs.PREFIX.format(
+            namespace=self._node.namespace,
+            instance_id=self._node._hb_app.instance_id
+        )
+
+        self._pub = self._node.create_mpublisher()
+        if self._node.state == NodeState.RUNNING:
+            self._pub.run()
+
+    def send(self, topic: str, msg: Dict[str, Any]):
+        if threading.current_thread() != threading.main_thread():  # pragma: no cover
+            asyncio.get_event_loop().call_soon_threadsafe(self.send, msg)
+            return
+        _topic = self._make_topic(topic)
+        self._pub.publish(msg, _topic)
+
+    def _make_topic(self, topic: str):
+        if self._use_bot_prefix:
+            _topic = f'{self._topic_prefix}/{topic}'
+        else:
+            _topic = topic
+        return _topic
+
+    def __call__(self, topic: str, msg: Dict[str, Any]):
+        self.send(topic, msg)

@@ -1,24 +1,19 @@
 import json
 import time
 from collections import OrderedDict
+from typing import Any
 
 import eth_account
-from eth_abi import encode
-from eth_account.messages import encode_structured_data
+import msgpack
+from eth_account.messages import encode_typed_data
 from eth_utils import keccak, to_hex
 
 from hummingbot.connector.derivative.hyperliquid_perpetual import hyperliquid_perpetual_constants as CONSTANTS
 from hummingbot.connector.derivative.hyperliquid_perpetual.hyperliquid_perpetual_web_utils import (
-    float_to_int_for_hashing,
-    order_grouping_to_number,
     order_spec_to_order_wire,
-    order_type_to_tuple,
-    str_to_bytes16,
 )
 from hummingbot.core.web_assistant.auth import AuthBase
 from hummingbot.core.web_assistant.connections.data_types import RESTMethod, RESTRequest, WSRequest
-
-ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
 
 
 class HyperliquidPerpetualAuth(AuthBase):
@@ -26,31 +21,69 @@ class HyperliquidPerpetualAuth(AuthBase):
     Auth class required by Hyperliquid Perpetual API
     """
 
-    def __init__(self, api_key: str, api_secret: str, use_vault: bool):
-        self._api_key: str = api_key
+    def __init__(
+        self,
+        api_address: str,
+        api_secret: str,
+        use_vault: bool
+    ):
+        # can be as Arbitrum wallet address or Vault address
+        self._api_address: str = api_address
+        # can be as Arbitrum wallet private key or Hyperliquid API wallet private key
         self._api_secret: str = api_secret
-        self._use_vault: bool = use_vault
+        self._vault_address = api_address if use_vault else None
         self.wallet = eth_account.Account.from_key(api_secret)
 
+    @classmethod
+    def address_to_bytes(cls, address: str) -> bytes:
+        """
+        Converts an Ethereum address to bytes.
+        """
+        return bytes.fromhex(address[2:] if address.startswith("0x") else address)
+
+    @classmethod
+    def action_hash(cls, action, vault_address: str, nonce: int):
+        """
+        Computes the hash of an action.
+        """
+        data = msgpack.packb(action)
+        data += int(nonce).to_bytes(8, "big")  # ensure int, 8-byte big-endian
+        if vault_address is None:
+            data += b"\x00"
+        else:
+            data += b"\x01"
+            data += cls.address_to_bytes(vault_address)
+
+        return keccak(data)
+
     def sign_inner(self, wallet, data):
-        structured_data = encode_structured_data(data)
+        """
+        Signs a request.
+        """
+        structured_data = encode_typed_data(full_message=data)
         signed = wallet.sign_message(structured_data)
+
         return {"r": to_hex(signed["r"]), "s": to_hex(signed["s"]), "v": signed["v"]}
 
-    def construct_phantom_agent(self, signature_types, signature_data, is_mainnet):
-        connection_id = encode(signature_types, signature_data)
-        return {"source": "a" if is_mainnet else "b", "connectionId": keccak(connection_id)}
+    def construct_phantom_agent(self, hash_iterable: bytes, is_mainnet: bool) -> dict[str, Any]:
+        """
+        Constructs a phantom agent.
+        """
+        return {"source": "a" if is_mainnet else "b", "connectionId": hash_iterable}
 
-    def sign_l1_action(self, wallet, signature_types, signature_data, active_pool, nonce, is_mainnet):
-        signature_types.append("address")
-        signature_types.append("uint64")
-        if active_pool is None:
-            signature_data.append(ZERO_ADDRESS)
-        else:
-            signature_data.append(active_pool)
-        signature_data.append(nonce)
-
-        phantom_agent = self.construct_phantom_agent(signature_types, signature_data, is_mainnet)
+    def sign_l1_action(
+        self,
+        wallet,
+        action: dict[str, Any],
+        active_pool,
+        nonce: int,
+        is_mainnet: bool
+    ) -> dict[str, Any]:
+        """
+        Signs a L1 action.
+        """
+        _hash = self.action_hash(action, active_pool, nonce)
+        phantom_agent = self.construct_phantom_agent(_hash, is_mainnet)
 
         data = {
             "domain": {
@@ -80,23 +113,17 @@ class HyperliquidPerpetualAuth(AuthBase):
         base_url = request.url
         if request.method == RESTMethod.POST:
             request.data = self.add_auth_to_params_post(request.data, base_url)
+
         return request
 
     async def ws_authenticate(self, request: WSRequest) -> WSRequest:
         return request  # pass-through
 
     def _sign_update_leverage_params(self, params, base_url, timestamp):
-        res = [
-            params["asset"],
-            params["isCross"],
-            params["leverage"],
-        ]
-        signature_types = ["uint32", "bool", "uint32"]
         signature = self.sign_l1_action(
             self.wallet,
-            signature_types,
-            res,
-            ZERO_ADDRESS if not self._use_vault else self._api_key,
+            params,
+            self._vault_address,
             timestamp,
             CONSTANTS.PERPETUAL_BASE_URL in base_url,
         )
@@ -104,78 +131,57 @@ class HyperliquidPerpetualAuth(AuthBase):
             "action": params,
             "nonce": timestamp,
             "signature": signature,
-            "vaultAddress": self._api_key if self._use_vault else None,
+            "vaultAddress": self._vault_address,
         }
         return payload
 
     def _sign_cancel_params(self, params, base_url, timestamp):
-        cancel = params["cancels"]
-        res = (
-            cancel["asset"],
-            str_to_bytes16(cancel["cloid"])
-
-        )
-        signature_types = ["(uint32,bytes16)[]"]
+        order_action = {
+            "type": "cancelByCloid",
+            "cancels": [params["cancels"]],
+        }
         signature = self.sign_l1_action(
             self.wallet,
-            signature_types,
-            [[res]],
-            ZERO_ADDRESS if not self._use_vault else self._api_key,
+            order_action,
+            self._vault_address,
             timestamp,
             CONSTANTS.PERPETUAL_BASE_URL in base_url,
         )
-        payload = {
-            "action": {
-                "type": "cancelByCloid",
-                "cancels": [cancel],
-            },
+
+        return {
+            "action": order_action,
             "nonce": timestamp,
             "signature": signature,
-            "vaultAddress": self._api_key if self._use_vault else None,
-
+            "vaultAddress": self._vault_address,
         }
-        return payload
 
     def _sign_order_params(self, params, base_url, timestamp):
-
         order = params["orders"]
-        order_type_array = order_type_to_tuple(order["orderType"])
         grouping = params["grouping"]
-
-        res = (
-            order["asset"],
-            order["isBuy"],
-            float_to_int_for_hashing(float(order["limitPx"])),
-            float_to_int_for_hashing(float(order["sz"])),
-            order["reduceOnly"],
-            order_type_array[0],
-            float_to_int_for_hashing(float(order_type_array[1])),
-            str_to_bytes16(order["cloid"])
-        )
-        signature_types = ["(uint32,bool,uint64,uint64,bool,uint8,uint64,bytes16)[]", "uint8"]
+        order_action = {
+            "type": "order",
+            "orders": [order_spec_to_order_wire(order)],
+            "grouping": grouping,
+        }
         signature = self.sign_l1_action(
             self.wallet,
-            signature_types,
-            [[res], order_grouping_to_number(grouping)],
-            ZERO_ADDRESS if not self._use_vault else self._api_key,
+            order_action,
+            self._vault_address,
             timestamp,
             CONSTANTS.PERPETUAL_BASE_URL in base_url,
         )
 
-        payload = {
-            "action": {
-                "type": "order",
-                "grouping": grouping,
-                "orders": [order_spec_to_order_wire(order)],
-            },
+        return {
+            "action": order_action,
             "nonce": timestamp,
             "signature": signature,
-            "vaultAddress": self._api_key if self._use_vault else None,
-
+            "vaultAddress": self._vault_address,
         }
-        return payload
 
     def add_auth_to_params_post(self, params: str, base_url):
+        """
+        Adds authentication to a request.
+        """
         timestamp = int(self._get_timestamp() * 1e3)
         payload = {}
         data = json.loads(params) if params is not None else {}

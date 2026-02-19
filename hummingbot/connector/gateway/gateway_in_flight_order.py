@@ -129,25 +129,7 @@ class GatewayInFlightOrder(InFlightOrder):
 
     @property
     def is_done(self) -> bool:
-        if self.is_approval_request:
-            return not self.is_pending_approval
         return super().is_done
-
-    @property
-    def is_pending_approval(self) -> bool:
-        return self.current_state in {OrderState.PENDING_APPROVAL}
-
-    @property
-    def is_approval_request(self) -> bool:
-        """
-        A property attribute that returns `True` if this `GatewayInFlightOrder` is in fact a token approval request.
-
-        :return: True if this `GatewayInFlightOrder` is in fact a token approval request, otherwise it returns False
-        :rtype: bool
-        """
-        return "approve" in self.client_order_id or (
-            self.current_state in {OrderState.PENDING_APPROVAL, OrderState.APPROVED}
-        )
 
     def update_creation_transaction_hash(self, creation_transaction_hash: str):
         self.creation_transaction_hash = creation_transaction_hash
@@ -183,9 +165,8 @@ class GatewayInFlightOrder(InFlightOrder):
             self.update_creation_transaction_hash(creation_transaction_hash=creation_transaction_hash)
         self._cancel_tx_hash = misc_updates.get("cancelation_transaction_hash", self._cancel_tx_hash)
         if self.current_state not in {OrderState.PENDING_CANCEL, OrderState.CANCELED}:
-            self.nonce = misc_updates.get("nonce", None)
-            self.fee_asset = misc_updates.get("fee_asset", None)
-            self.gas_price = misc_updates.get("gas_price", None)
+            if "fee_asset" in misc_updates:
+                self.fee_asset = misc_updates["fee_asset"]
 
         updated: bool = prev_data != self.attributes
 

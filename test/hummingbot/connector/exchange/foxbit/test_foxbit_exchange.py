@@ -9,8 +9,6 @@ from aioresponses import aioresponses
 from aioresponses.core import RequestCall
 from bidict import bidict
 
-from hummingbot.client.config.client_config_map import ClientConfigMap
-from hummingbot.client.config.config_helpers import ClientConfigAdapter
 from hummingbot.connector.exchange.foxbit import (
     foxbit_constants as CONSTANTS,
     foxbit_utils as utils,
@@ -34,13 +32,17 @@ class FoxbitExchangeTests(AbstractExchangeConnectorTests.ExchangeConnectorTests)
         mapping[1] = self.trading_pair
         self.exchange._trading_pair_instrument_id_map = mapping
 
+    async def asyncSetUp(self) -> None:
+        await super().asyncSetUp()
+        self.mocking_assistant = NetworkMockingAssistant()
+
     @property
     def all_symbols_url(self):
         return web_utils.public_rest_url(path_url=CONSTANTS.EXCHANGE_INFO_PATH_URL, domain=self.exchange._domain)
 
     @property
     def latest_prices_url(self):
-        url = web_utils.public_rest_url(path_url=CONSTANTS.TICKER_PRICE_CHANGE_PATH_URL, domain=self.exchange._domain)
+        url = web_utils.public_rest_url(path_url=CONSTANTS.WS_SUBSCRIBE_TOB, domain=self.exchange._domain)
         url = f"{url}?symbol={self.exchange_symbol_for_tokens(self.base_asset, self.quote_asset)}"
         return url
 
@@ -283,7 +285,7 @@ class FoxbitExchangeTests(AbstractExchangeConnectorTests.ExchangeConnectorTests)
 
     @property
     def expected_supported_order_types(self):
-        return [OrderType.LIMIT, OrderType.MARKET]
+        return [OrderType.LIMIT, OrderType.LIMIT_MAKER, OrderType.MARKET]
 
     @property
     def expected_trading_rule(self):
@@ -338,9 +340,7 @@ class FoxbitExchangeTests(AbstractExchangeConnectorTests.ExchangeConnectorTests)
         return f"{base_token}{quote_token}"
 
     def create_exchange_instance(self):
-        client_config_map = ClientConfigAdapter(ClientConfigMap())
         return FoxbitExchange(
-            client_config_map=client_config_map,
             foxbit_api_key="testAPIKey",
             foxbit_api_secret="testSecret",
             foxbit_user_id="testUserId",
@@ -407,8 +407,7 @@ class FoxbitExchangeTests(AbstractExchangeConnectorTests.ExchangeConnectorTests)
     ) -> str:
         url = web_utils.private_rest_url(CONSTANTS.CANCEL_ORDER_PATH_URL)
         regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?"))
-        response = {"code": -2011, "msg": "Unknown order sent."}
-        mock_api.put(regex_url, status=400, body=json.dumps(response), callback=callback)
+        mock_api.put(regex_url, status=404, callback=callback)
         return url
 
     def configure_one_successful_one_erroneous_cancel_all_response(
@@ -442,7 +441,7 @@ class FoxbitExchangeTests(AbstractExchangeConnectorTests.ExchangeConnectorTests)
             order: InFlightOrder,
             mock_api: aioresponses,
             callback: Optional[Callable] = lambda *args, **kwargs: None) -> str:
-        url = web_utils.private_rest_url(CONSTANTS.GET_ORDER_BY_ID.format(order.exchange_order_id))
+        url = web_utils.private_rest_url(CONSTANTS.GET_ORDER_BY_CLIENT_ID.format(order.exchange_order_id))
         regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?"))
         response = self._order_status_request_canceled_mock_response(order=order)
         mock_api.get(regex_url, body=json.dumps(response), callback=callback)
@@ -464,7 +463,7 @@ class FoxbitExchangeTests(AbstractExchangeConnectorTests.ExchangeConnectorTests)
         """
         :return: the URL configured
         """
-        url = web_utils.private_rest_url(CONSTANTS.GET_ORDER_BY_ID.format(order.exchange_order_id))
+        url = web_utils.private_rest_url(CONSTANTS.GET_ORDER_BY_CLIENT_ID.format(order.exchange_order_id))
         regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?"))
         response = self._order_status_request_open_mock_response(order=order)
         mock_api.get(regex_url, body=json.dumps(response), callback=callback)
@@ -475,7 +474,7 @@ class FoxbitExchangeTests(AbstractExchangeConnectorTests.ExchangeConnectorTests)
             order: InFlightOrder,
             mock_api: aioresponses,
             callback: Optional[Callable] = lambda *args, **kwargs: None) -> str:
-        url = web_utils.private_rest_url(CONSTANTS.GET_ORDER_BY_ID.format(order.exchange_order_id))
+        url = web_utils.private_rest_url(CONSTANTS.GET_ORDER_BY_CLIENT_ID.format(order.exchange_order_id))
         regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?"))
         mock_api.get(regex_url, status=401, callback=callback)
         return url
@@ -485,7 +484,7 @@ class FoxbitExchangeTests(AbstractExchangeConnectorTests.ExchangeConnectorTests)
             order: InFlightOrder,
             mock_api: aioresponses,
             callback: Optional[Callable] = lambda *args, **kwargs: None) -> str:
-        url = web_utils.private_rest_url(CONSTANTS.GET_ORDER_BY_ID.format(order.exchange_order_id))
+        url = web_utils.private_rest_url(CONSTANTS.GET_ORDER_BY_CLIENT_ID.format(order.exchange_order_id))
         regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?"))
         response = self._order_status_request_partially_filled_mock_response(order=order)
         mock_api.get(regex_url, body=json.dumps(response), callback=callback)
@@ -496,8 +495,7 @@ class FoxbitExchangeTests(AbstractExchangeConnectorTests.ExchangeConnectorTests)
     ) -> List[str]:
         url = web_utils.private_rest_url(CONSTANTS.ORDER_PATH_URL)
         regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?"))
-        response = {"code": -2013, "msg": "Order does not exist."}
-        mock_api.get(regex_url, body=json.dumps(response), status=400, callback=callback)
+        mock_api.get(regex_url, status=404, callback=callback)
         return [url]
 
     def configure_partial_fill_trade_response(
@@ -606,43 +604,8 @@ class FoxbitExchangeTests(AbstractExchangeConnectorTests.ExchangeConnectorTests)
         }
 
     @aioresponses()
-    @patch("aiohttp.ClientSession.ws_connect", new_callable=AsyncMock)
-    def test_all_trading_pairs(self, mock_api, ws_connect_mock):
-        ws_connect_mock.return_value = self.mocking_assistant.create_websocket_mock()
-        ixm_config = {
-            'm': 0,
-            'i': 1,
-            'n': 'GetInstruments',
-            'o': '[{"OMSId":1,"InstrumentId":1,"Symbol":"COINALPHA/HBOT","Product1":1,"Product1Symbol":"COINALPHA","Product2":2,"Product2Symbol":"HBOT","InstrumentType":"Standard","VenueInstrumentId":1,"VenueId":1,"SortIndex":0,"SessionStatus":"Running","PreviousSessionStatus":"Paused","SessionStatusDateTime":"2020-07-11T01:27:02.851Z","SelfTradePrevention":true,"QuantityIncrement":1e-8,"PriceIncrement":0.01,"MinimumQuantity":1e-8,"MinimumPrice":0.01,"VenueSymbol":"BTC/BRL","IsDisable":false,"MasterDataId":0,"PriceCollarThreshold":0,"PriceCollarPercent":0,"PriceCollarEnabled":false,"PriceFloorLimit":0,"PriceFloorLimitEnabled":false,"PriceCeilingLimit":0,"PriceCeilingLimitEnabled":false,"CreateWithMarketRunning":true,"AllowOnlyMarketMakerCounterParty":false}]'
-        }
-        self.mocking_assistant.add_websocket_aiohttp_message(
-            websocket_mock=ws_connect_mock.return_value,
-            message=json.dumps(ixm_config))
-
-        ixm_response = {
-            'm': 0,
-            'i': 1,
-            'n':
-            'SubscribeLevel1',
-            'o': '{"OMSId":1,"InstrumentId":1,"MarketId":"coinalphahbot","BestBid":145899,"BestOffer":145901,"LastTradedPx":145899,"LastTradedQty":0.0009,"LastTradeTime":1662663925,"SessionOpen":145899,"SessionHigh":145901,"SessionLow":145899,"SessionClose":145901,"Volume":0.0009,"CurrentDayVolume":0.008,"CurrentDayNumTrades":17,"CurrentDayPxChange":2,"Rolling24HrVolume":0.008,"Rolling24NumTrades":17,"Rolling24HrPxChange":0.0014,"TimeStamp":1662736972}'
-        }
-        self.mocking_assistant.add_websocket_aiohttp_message(
-            websocket_mock=ws_connect_mock.return_value,
-            message=json.dumps(ixm_response))
-
-        self.exchange._set_trading_pair_symbol_map(None)
-        url = self.all_symbols_url
-
-        response = self.all_symbols_request_mock_response
-        mock_api.get(url, body=json.dumps(response))
-
-        all_trading_pairs = self.async_run_with_timeout(coroutine=self.exchange.all_trading_pairs())
-
-        self.assertEqual(1, len(all_trading_pairs))
-
-    @aioresponses()
     @patch("hummingbot.connector.time_synchronizer.TimeSynchronizer._current_seconds_counter")
-    def test_update_time_synchronizer_successfully(self, mock_api, seconds_counter_mock):
+    async def test_update_time_synchronizer_successfully(self, mock_api, seconds_counter_mock):
         request_sent_event = asyncio.Event()
         seconds_counter_mock.side_effect = [0, 0, 0]
 
@@ -656,12 +619,12 @@ class FoxbitExchangeTests(AbstractExchangeConnectorTests.ExchangeConnectorTests)
                      body=json.dumps(response),
                      callback=lambda *args, **kwargs: request_sent_event.set())
 
-        self.async_run_with_timeout(self.exchange._update_time_synchronizer())
+        await self.exchange._update_time_synchronizer()
 
         self.assertEqual(response["timestamp"] * 1e-3, self.exchange._time_synchronizer.time())
 
     @aioresponses()
-    def test_update_time_synchronizer_failure_is_logged(self, mock_api):
+    async def test_update_time_synchronizer_failure_is_logged(self, mock_api):
         request_sent_event = asyncio.Event()
 
         url = web_utils.private_rest_url(CONSTANTS.SERVER_TIME_PATH_URL)
@@ -676,7 +639,7 @@ class FoxbitExchangeTests(AbstractExchangeConnectorTests.ExchangeConnectorTests)
         get_error = False
 
         try:
-            self.async_run_with_timeout(self.exchange._update_time_synchronizer())
+            await self.exchange._update_time_synchronizer()
             get_error = True
         except Exception:
             get_error = True
@@ -684,19 +647,18 @@ class FoxbitExchangeTests(AbstractExchangeConnectorTests.ExchangeConnectorTests)
         self.assertTrue(get_error)
 
     @aioresponses()
-    def test_update_time_synchronizer_raises_cancelled_error(self, mock_api):
+    async def test_update_time_synchronizer_raises_cancelled_error(self, mock_api):
         url = web_utils.private_rest_url(CONSTANTS.SERVER_TIME_PATH_URL)
         regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?"))
 
         mock_api.get(regex_url,
                      exception=asyncio.CancelledError)
 
-        self.assertRaises(
-            asyncio.CancelledError,
-            self.async_run_with_timeout, self.exchange._update_time_synchronizer())
+        with self.assertRaises(asyncio.CancelledError):
+            await self.exchange._update_time_synchronizer()
 
     @aioresponses()
-    def test_update_order_fills_from_trades_triggers_filled_event(self, mock_api):
+    async def test_update_order_fills_from_trades_triggers_filled_event(self, mock_api):
         self.exchange._set_current_timestamp(1640780000)
         self.exchange._last_poll_timestamp = 0
 
@@ -750,7 +712,7 @@ class FoxbitExchangeTests(AbstractExchangeConnectorTests.ExchangeConnectorTests)
         self.exchange.add_exchange_order_ids_from_market_recorder(
             {str(trade_fill_non_tracked_order['data']["order_id"]): "OID99"})
 
-        self.async_run_with_timeout(self.exchange._update_order_fills_from_trades())
+        await self.exchange._update_order_fills_from_trades()
 
         request = self._all_executed_requests(mock_api, web_utils.private_rest_url(CONSTANTS.MY_TRADES_PATH_URL))[0]
         self.validate_auth_credentials_present(request)
@@ -758,7 +720,7 @@ class FoxbitExchangeTests(AbstractExchangeConnectorTests.ExchangeConnectorTests)
         self.assertEqual(self.exchange_symbol_for_tokens(self.base_asset, self.quote_asset), request_params["market_symbol"])
 
     @aioresponses()
-    def test_update_order_fills_request_parameters(self, mock_api):
+    async def test_update_order_fills_request_parameters(self, mock_api):
         self.exchange._set_current_timestamp(1640780000)
         self.exchange._last_poll_timestamp = 0
 
@@ -768,7 +730,7 @@ class FoxbitExchangeTests(AbstractExchangeConnectorTests.ExchangeConnectorTests)
         mock_response = []
         mock_api.get(regex_url, body=json.dumps(mock_response))
 
-        self.async_run_with_timeout(self.exchange._update_order_fills_from_trades())
+        await self.exchange._update_order_fills_from_trades()
 
         request = self._all_executed_requests(mock_api, web_utils.private_rest_url(CONSTANTS.MY_TRADES_PATH_URL))[0]
         self.validate_auth_credentials_present(request)
@@ -776,7 +738,7 @@ class FoxbitExchangeTests(AbstractExchangeConnectorTests.ExchangeConnectorTests)
         self.assertEqual(self.exchange_symbol_for_tokens(self.base_asset, self.quote_asset), request_params["market_symbol"])
 
     @aioresponses()
-    def test_update_order_fills_from_trades_with_repeated_fill_triggers_only_one_event(self, mock_api):
+    async def test_update_order_fills_from_trades_with_repeated_fill_triggers_only_one_event(self, mock_api):
         self.exchange._set_current_timestamp(1640780000)
         self.exchange._last_poll_timestamp = 0
 
@@ -804,7 +766,7 @@ class FoxbitExchangeTests(AbstractExchangeConnectorTests.ExchangeConnectorTests)
         self.exchange.add_exchange_order_ids_from_market_recorder(
             {str(trade_fill_non_tracked_order['data']["order_id"]): "OID99"})
 
-        self.async_run_with_timeout(self.exchange._update_order_fills_from_trades())
+        await self.exchange._update_order_fills_from_trades()
 
         request = self._all_executed_requests(mock_api, web_utils.private_rest_url(CONSTANTS.MY_TRADES_PATH_URL))[0]
         self.validate_auth_credentials_present(request)
@@ -812,7 +774,7 @@ class FoxbitExchangeTests(AbstractExchangeConnectorTests.ExchangeConnectorTests)
         self.assertEqual(self.exchange_symbol_for_tokens(self.base_asset, self.quote_asset), request_params["market_symbol"])
 
     @aioresponses()
-    def test_update_order_status_when_failed(self, mock_api):
+    async def test_update_order_status_when_failed(self, mock_api):
         self.exchange._set_current_timestamp(1640780000)
         self.exchange._last_poll_timestamp = 0
 
@@ -827,7 +789,7 @@ class FoxbitExchangeTests(AbstractExchangeConnectorTests.ExchangeConnectorTests)
         )
         order = self.exchange.in_flight_orders["OID1"]
 
-        url = web_utils.private_rest_url(CONSTANTS.GET_ORDER_BY_ID.format(order.exchange_order_id))
+        url = web_utils.private_rest_url(CONSTANTS.GET_ORDER_BY_CLIENT_ID.format(order.exchange_order_id))
         regex_url = re.compile(f"^{url}".replace(".", r"\.").replace("?", r"\?"))
 
         order_status = {
@@ -852,13 +814,13 @@ class FoxbitExchangeTests(AbstractExchangeConnectorTests.ExchangeConnectorTests)
         mock_response = order_status
         mock_api.get(regex_url, body=json.dumps(mock_response))
 
-        self.async_run_with_timeout(self.exchange._update_order_status())
+        self.exchange._update_order_status()
 
-        request = self._all_executed_requests(mock_api, web_utils.private_rest_url(CONSTANTS.GET_ORDER_BY_ID.format(order.exchange_order_id)))
+        request = self._all_executed_requests(mock_api, web_utils.private_rest_url(CONSTANTS.GET_ORDER_BY_CLIENT_ID.format(order.exchange_order_id)))
         self.assertEqual([], request)
 
     @aioresponses()
-    def test_cancel_order_raises_failure_event_when_request_fails(self, mock_api):
+    async def test_cancel_order_raises_failure_event_when_request_fails(self, mock_api):
         request_sent_event = asyncio.Event()
         self.exchange._set_current_timestamp(1640780000)
 
@@ -881,7 +843,7 @@ class FoxbitExchangeTests(AbstractExchangeConnectorTests.ExchangeConnectorTests)
             callback=lambda *args, **kwargs: request_sent_event.set())
 
         self.exchange.cancel(trading_pair=self.trading_pair, client_order_id="11")
-        self.async_run_with_timeout(request_sent_event.wait())
+        await request_sent_event.wait()
 
         cancel_request = self._all_executed_requests(mock_api, url)[0]
         self.validate_auth_credentials_present(cancel_request)
@@ -892,6 +854,37 @@ class FoxbitExchangeTests(AbstractExchangeConnectorTests.ExchangeConnectorTests)
         self.assertEqual(0, len(self.order_cancelled_logger.event_log))
         self.assertTrue(any(log.msg.startswith(f"Failed to cancel order {order.client_order_id}")
                             for log in self.log_records))
+
+    @aioresponses()
+    async def test_cancel_order_not_found_in_the_exchange(self, mock_api):
+        self.exchange._set_current_timestamp(1640780000)
+        request_sent_event = asyncio.Event()
+
+        self.exchange.start_tracking_order(
+            order_id=self.client_order_id_prefix + "1",
+            exchange_order_id=str(self.expected_exchange_order_id),
+            trading_pair=self.trading_pair,
+            order_type=OrderType.LIMIT,
+            trade_type=TradeType.BUY,
+            price=Decimal("10000"),
+            amount=Decimal("1"),
+        )
+
+        self.assertIn(self.client_order_id_prefix + "1", self.exchange.in_flight_orders)
+        order = self.exchange.in_flight_orders[self.client_order_id_prefix + "1"]
+
+        self.configure_order_not_found_error_cancelation_response(
+            order=order, mock_api=mock_api, callback=lambda *args, **kwargs: request_sent_event.set()
+        )
+
+        self.exchange.cancel(trading_pair=self.trading_pair, client_order_id=self.client_order_id_prefix + "1")
+        await request_sent_event.wait()
+
+        self.assertFalse(order.is_done)
+        self.assertFalse(order.is_failure)
+        self.assertFalse(order.is_cancelled)
+
+        self.assertIn(order.client_order_id, self.exchange._order_tracker.all_updatable_orders)
 
     def test_client_order_id_on_order(self):
         self.exchange._set_current_timestamp(1640780000)
@@ -906,8 +899,8 @@ class FoxbitExchangeTests(AbstractExchangeConnectorTests.ExchangeConnectorTests)
             is_buy=True,
         )
 
-        self.assertEqual(result[:12], expected_client_order_id[:12])
-        self.assertEqual(result[:2], self.exchange.client_order_id_prefix)
+        self.assertEqual(result[:10], expected_client_order_id[:10])
+        self.assertEqual(result[3], "0")
         self.assertLess(len(expected_client_order_id), self.exchange.client_order_id_max_length)
 
         result = self.exchange.sell(
@@ -920,41 +913,42 @@ class FoxbitExchangeTests(AbstractExchangeConnectorTests.ExchangeConnectorTests)
             is_buy=False,
         )
 
-        self.assertEqual(result[:12], expected_client_order_id[:12])
+        self.assertEqual(result[:10], expected_client_order_id[:10])
 
-    def test_create_order(self):
+    @aioresponses()
+    async def test_create_order(self, mock_api):
         self._simulate_trading_rules_initialized()
-        _order = self.async_run_with_timeout(self.exchange._create_order(TradeType.BUY,
-                                                                         '551100',
-                                                                         self.trading_pair,
-                                                                         Decimal(1.01),
-                                                                         OrderType.LIMIT,
-                                                                         Decimal(22354.01)))
+        _order = await self.exchange._create_order(TradeType.BUY,
+                                                   '551100',
+                                                   self.trading_pair,
+                                                   Decimal(1.01),
+                                                   OrderType.LIMIT,
+                                                   Decimal(22354.01))
         self.assertIsNone(_order)
 
     @aioresponses()
-    def test_create_limit_buy_order_raises_error(self, mock_api):
+    async def test_create_limit_buy_order_raises_error(self, mock_api):
         self._simulate_trading_rules_initialized()
         try:
-            self.async_run_with_timeout(self.exchange._create_order(TradeType.BUY,
-                                                                    '551100',
-                                                                    self.trading_pair,
-                                                                    Decimal(1.01),
-                                                                    OrderType.LIMIT,
-                                                                    Decimal(22354.01)))
+            await self.exchange._create_order(TradeType.BUY,
+                                              '551100',
+                                              self.trading_pair,
+                                              Decimal(1.01),
+                                              OrderType.LIMIT,
+                                              Decimal(22354.01))
         except Exception as err:
             self.assertEqual('', err.args[0])
 
     @aioresponses()
-    def test_create_limit_sell_order_raises_error(self, mock_api):
+    async def test_create_limit_sell_order_raises_error(self, mock_api):
         self._simulate_trading_rules_initialized()
         try:
-            self.async_run_with_timeout(self.exchange._create_order(TradeType.SELL,
-                                                                    '551100',
-                                                                    self.trading_pair,
-                                                                    Decimal(1.01),
-                                                                    OrderType.LIMIT,
-                                                                    Decimal(22354.01)))
+            await self.exchange._create_order(TradeType.SELL,
+                                              '551100',
+                                              self.trading_pair,
+                                              Decimal(1.01),
+                                              OrderType.LIMIT,
+                                              Decimal(22354.01))
         except Exception as err:
             self.assertEqual('', err.args[0])
 
@@ -968,14 +962,15 @@ class FoxbitExchangeTests(AbstractExchangeConnectorTests.ExchangeConnectorTests)
             "instruments_mapping_initialized": True,
             "order_books_initialized": False,
             "account_balance": False,
-            "trading_rule_initialized": False
+            "trading_rule_initialized": False,
+            "user_stream_initialized": False
         }
 
         self.assertEqual(expected_initial_dict, status_dict)
         self.assertFalse(self.exchange.ready)
 
     @patch("aiohttp.ClientSession.ws_connect", new_callable=AsyncMock)
-    def test_get_last_trade_prices(self, ws_connect_mock):
+    async def test_get_last_trade_prices(self, ws_connect_mock):
         ws_connect_mock.return_value = self.mocking_assistant.create_websocket_mock()
         ixm_response = {
             'm': 0,
@@ -989,7 +984,7 @@ class FoxbitExchangeTests(AbstractExchangeConnectorTests.ExchangeConnectorTests)
             message=json.dumps(ixm_response))
 
         expected_value = 145899.0
-        ret_value = self.async_run_with_timeout(self.exchange._get_last_traded_price(self.trading_pair))
+        ret_value = await self.exchange._get_last_traded_price(self.trading_pair)
 
         self.assertEqual(expected_value, ret_value)
 
@@ -1106,11 +1101,11 @@ class FoxbitExchangeTests(AbstractExchangeConnectorTests.ExchangeConnectorTests)
         }
 
     @patch("aiohttp.ClientSession.ws_connect", new_callable=AsyncMock)
-    def test_exchange_properties_and_commons(self, ws_connect_mock):
+    async def test_exchange_properties_and_commons(self, ws_connect_mock):
         self.assertEqual(CONSTANTS.EXCHANGE_INFO_PATH_URL, self.exchange.trading_rules_request_path)
         self.assertEqual(CONSTANTS.EXCHANGE_INFO_PATH_URL, self.exchange.trading_pairs_request_path)
         self.assertEqual(CONSTANTS.PING_PATH_URL, self.exchange.check_network_request_path)
-        self.assertTrue(self.exchange.is_cancel_request_in_exchange_synchronous)
+        self.assertFalse(self.exchange.is_cancel_request_in_exchange_synchronous)
         self.assertTrue(self.exchange.is_trading_required)
         self.assertEqual('1', self.exchange.convert_from_exchange_instrument_id('1'))
         self.assertEqual('1', self.exchange.convert_to_exchange_instrument_id('1'))
@@ -1121,7 +1116,7 @@ class FoxbitExchangeTests(AbstractExchangeConnectorTests.ExchangeConnectorTests)
             self.assertEqual('Order type not supported by Foxbit.', err.args[0])
 
         self.assertEqual(OrderType.MARKET, self.exchange.to_hb_order_type('MARKET'))
-        self.assertEqual([OrderType.LIMIT, OrderType.MARKET], self.exchange.supported_order_types())
+        self.assertEqual([OrderType.LIMIT, OrderType.LIMIT_MAKER, OrderType.MARKET], self.exchange.supported_order_types())
         self.assertTrue(self.exchange.trading_pair_instrument_id_map_ready)
 
         ws_connect_mock.return_value = self.mocking_assistant.create_websocket_mock()
@@ -1134,10 +1129,10 @@ class FoxbitExchangeTests(AbstractExchangeConnectorTests.ExchangeConnectorTests)
         self.mocking_assistant.add_websocket_aiohttp_message(
             websocket_mock=ws_connect_mock.return_value,
             message=json.dumps(ixm_config))
-        _currentTP = self.async_run_with_timeout(self.exchange.trading_pair_instrument_id_map())
+        _currentTP = await self.exchange.trading_pair_instrument_id_map()
         self.assertIsNotNone(_currentTP)
         self.assertEqual(self.trading_pair, _currentTP[1])
-        _currentTP = self.async_run_with_timeout(self.exchange.exchange_instrument_id_associated_to_pair('COINALPHA-HBOT'))
+        _currentTP = await self.exchange.exchange_instrument_id_associated_to_pair('COINALPHA-HBOT')
         self.assertEqual(1, _currentTP)
 
         self.assertIsNotNone(self.exchange.get_fee('COINALPHA', 'BOT', OrderType.MARKET, TradeType.BUY, 1.0, 22500.011, False))
@@ -1191,4 +1186,12 @@ class FoxbitExchangeTests(AbstractExchangeConnectorTests.ExchangeConnectorTests)
 
     @aioresponses()
     def test_lost_order_user_stream_full_fill_events_are_processed(self, mock_api):
+        pass
+
+    @aioresponses()
+    async def test_create_order_fails_and_raises_failure_event(self, mock_api):
+        pass
+
+    @aioresponses()
+    async def test_create_order_fails_when_trading_rule_error_and_raises_failure_event(self, mock_api):
         pass

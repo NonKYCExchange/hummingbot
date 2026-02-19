@@ -1,23 +1,20 @@
 import importlib
-import json
 from decimal import Decimal
 from enum import Enum
 from os import DirEntry, scandir
-from os.path import exists, join, realpath
-from types import ModuleType
+from os.path import exists, join
 from typing import TYPE_CHECKING, Any, Dict, List, NamedTuple, Optional, Set, Union, cast
 
 from pydantic import SecretStr
 
 from hummingbot import get_strategy_list, root_path
+from hummingbot.connector.gateway.common_types import ConnectorType as GatewayConnectorType, get_connector_type
 from hummingbot.core.data_type.trade_fee import TradeFeeSchema
-from hummingbot.core.utils.gateway_config_utils import SUPPORTED_CHAINS
 
 if TYPE_CHECKING:
+    from hummingbot.client.config.client_config_map import GatewayConfigMap
     from hummingbot.client.config.config_data_types import BaseConnectorConfigMap
-    from hummingbot.client.config.config_helpers import ClientConfigAdapter
     from hummingbot.connector.connector_base import ConnectorBase
-    from hummingbot.connector.gateway.clob_spot.data_sources.clob_api_data_source_base import CLOBAPIDataSourceBase
 
 
 # Global variables
@@ -32,7 +29,6 @@ KEYFILE_PREFIX = "key_file_"
 KEYFILE_POSTFIX = ".yml"
 ENCYPTED_CONF_POSTFIX = ".json"
 DEFAULT_LOG_FILE_PATH = root_path() / "logs"
-DEFAULT_ETHEREUM_RPC_URL = "https://mainnet.coinalpha.com/hummingbot-test-node"
 TEMPLATE_PATH = root_path() / "hummingbot" / "templates"
 CONF_DIR_PATH = root_path() / "conf"
 CLIENT_CONFIG_PATH = CONF_DIR_PATH / "conf_client.yml"
@@ -43,7 +39,6 @@ SCRIPT_STRATEGY_CONF_DIR_PATH = CONF_DIR_PATH / "scripts"
 CONTROLLERS_CONF_DIR_PATH = CONF_DIR_PATH / "controllers"
 CONF_PREFIX = "conf_"
 CONF_POSTFIX = "_strategy"
-PMM_SCRIPTS_PATH = root_path() / "pmm_scripts"
 SCRIPT_STRATEGIES_MODULE = "scripts"
 SCRIPT_STRATEGIES_PATH = root_path() / SCRIPT_STRATEGIES_MODULE
 CONTROLLERS_MODULE = "controllers"
@@ -65,9 +60,7 @@ class ConnectorType(Enum):
     The types of exchanges that hummingbot client can communicate with.
     """
 
-    AMM = "AMM"
-    AMM_LP = "AMM_LP"
-    AMM_Perpetual = "AMM_Perpetual"
+    GATEWAY_DEX = "GATEWAY_DEX"
     CLOB_SPOT = "CLOB_SPOT"
     CLOB_PERP = "CLOB_PERP"
     Connector = "connector"
@@ -75,190 +68,7 @@ class ConnectorType(Enum):
     Derivative = "derivative"
 
 
-class GatewayConnectionSetting:
-    @staticmethod
-    def conf_path() -> str:
-        return realpath(join(CONF_DIR_PATH, "gateway_connections.json"))
-
-    @staticmethod
-    def load() -> List[Dict[str, str]]:
-        connections_conf_path: str = GatewayConnectionSetting.conf_path()
-        if exists(connections_conf_path):
-            with open(connections_conf_path) as fd:
-                return json.load(fd)
-        return []
-
-    @staticmethod
-    def save(settings: List[Dict[str, str]]):
-        connections_conf_path: str = GatewayConnectionSetting.conf_path()
-        with open(connections_conf_path, "w") as fd:
-            json.dump(settings, fd)
-
-    @staticmethod
-    def get_market_name_from_connector_spec(connector_spec: Dict[str, str]) -> str:
-        return f"{connector_spec['connector']}_{connector_spec['chain']}_{connector_spec['network']}"
-
-    @staticmethod
-    def get_connector_spec(connector_name: str, chain: str, network: str) -> Optional[Dict[str, str]]:
-        connector: Optional[Dict[str, str]] = None
-        connector_config: List[Dict[str, str]] = GatewayConnectionSetting.load()
-        for spec in connector_config:
-            if spec["connector"] == connector_name \
-               and spec["chain"] == chain \
-               and spec["network"] == network:
-                connector = spec
-
-        return connector
-
-    @staticmethod
-    def get_connector_spec_from_market_name(market_name: str) -> Optional[Dict[str, str]]:
-        for chain in SUPPORTED_CHAINS:
-            if chain in market_name:
-                connector, network = market_name.split(f"_{chain}_")
-                return GatewayConnectionSetting.get_connector_spec(connector, chain, network)
-        return None
-
-    @staticmethod
-    def upsert_connector_spec(
-        connector_name: str,
-        chain: str,
-        network: str,
-        trading_type: str,
-        chain_type: str,
-        wallet_address: str,
-        additional_spenders: List[str],
-        additional_prompt_values: Dict[str, str],
-    ):
-        new_connector_spec: Dict[str, str] = {
-            "connector": connector_name,
-            "chain": chain,
-            "network": network,
-            "trading_type": trading_type,
-            "chain_type": chain_type,
-            "wallet_address": wallet_address,
-            "additional_spenders": additional_spenders,
-            "additional_prompt_values": additional_prompt_values,
-        }
-        updated: bool = False
-        connectors_conf: List[Dict[str, str]] = GatewayConnectionSetting.load()
-        for i, c in enumerate(connectors_conf):
-            if c["connector"] == connector_name and c["chain"] == chain and c["network"] == network:
-                connectors_conf[i] = new_connector_spec
-                updated = True
-                break
-
-        if updated is False:
-            connectors_conf.append(new_connector_spec)
-        GatewayConnectionSetting.save(connectors_conf)
-
-    @staticmethod
-    def upsert_connector_spec_tokens(chain_network: str, tokens: List[str]):
-        chain, network = chain_network.split("_")
-        connectors_conf: List[Dict[str, str]] = GatewayConnectionSetting.load()
-        network_found = False
-
-        for c in connectors_conf:
-            if c["chain"] == chain and c["network"] == network:
-                c['tokens'] = tokens
-                network_found = True
-                break
-
-        if not network_found:
-            # If the chain_network doesn't exist, create a new dictionary
-            connectors_conf.append({"tokens": tokens})
-
-        GatewayConnectionSetting.save(connectors_conf)
-
-
-class GatewayTokenSetting:
-    @staticmethod
-    def config_path() -> str:
-        return realpath(join(CONF_DIR_PATH, "gateway_network.json"))
-
-    @staticmethod
-    def get_gateway_chains_with_network() -> List[str]:
-        chain_network_config: List[Dict[str, str]] = GatewayConnectionSetting.load()
-        # Use a set to store unique chain_network combinations
-        data = set()
-        for chain_network in chain_network_config:
-            chain = chain_network.get("chain")
-            network = chain_network.get('network')
-
-            if chain and network:
-                chain_network_identifier = f"{chain}_{network}"
-                data.add(chain_network_identifier)
-
-        return list(data)
-
-    @staticmethod
-    def get_network_spec(chain: str, network: str) -> Optional[Dict[str, str]]:
-        chain_network: Optional[Dict[str, str]] = None
-        chain_network_config: List[Dict[str, str]] = GatewayTokenSetting.load()
-        for spec in chain_network_config:
-            if f'{spec["chain_network"]}' == f"{chain}_{network}":
-                chain_network = spec
-
-        return chain_network
-
-    @staticmethod
-    def get_network_spec_from_name(chain_network: str) -> Optional[Dict[str, str]]:
-        for chain in SUPPORTED_CHAINS:
-            network = chain_network.split("_")[-1]
-            if chain in chain_network:
-                return GatewayTokenSetting.get_network_spec(chain, network)
-        return None
-
-    @staticmethod
-    def load() -> List[Dict[str, str]]:
-        connections_conf_path: str = GatewayTokenSetting.config_path()
-        if exists(connections_conf_path):
-            with open(connections_conf_path) as fd:
-                return json.load(fd)
-        return []
-
-    @staticmethod
-    def save(settings: List[Dict[str, str]]):
-        connections_conf_path: str = GatewayTokenSetting.config_path()
-        with open(connections_conf_path, "w") as fd:
-            json.dump(settings, fd)
-
-    @staticmethod
-    def upsert_network_spec(chain_network: str):
-        new_connector_spec: Dict[str, str] = {
-            "chain_network": chain_network,
-        }
-        updated: bool = False
-        connectors_conf: List[Dict[str, str]] = GatewayTokenSetting.load()
-        for i, c in enumerate(connectors_conf):
-            if c["chain_network"] == chain_network:
-                connectors_conf[i] = new_connector_spec
-                updated = True
-                break
-
-        if updated is False:
-            connectors_conf.append(new_connector_spec)
-        GatewayTokenSetting.save(connectors_conf)
-
-    @staticmethod
-    def upsert_network_spec_tokens(chain_network: str, tokens: List[str]):
-        network_conf: List[Dict[str, List[str]]] = GatewayTokenSetting.load()
-
-        network_found = False
-
-        for network in network_conf:
-            if network.get("chain_network") == chain_network:
-                network['tokens'] = tokens
-                network_found = True
-                break
-        if not network_found:
-            # If the chain_network doesn't exist, create a new dictionary
-            new_network = {
-                "chain_network": chain_network,
-                "tokens": tokens
-            }
-            network_conf.append(new_network)
-
-        GatewayTokenSetting.save(network_conf)
+# GatewayConnectionSetting has been removed - gateway connectors are now configured in Gateway, not Hummingbot
 
 
 class ConnectorSetting(NamedTuple):
@@ -292,14 +102,12 @@ class ConnectorSetting(NamedTuple):
     def module_name(self) -> str:
         # returns connector module name, e.g. binance_exchange
         if self.uses_gateway_generic_connector():
-            if 'AMM' in self.type.name:
-                # AMMs currently have multiple generic connectors. chain_type is used to determine the right connector to use.
-                connector_spec: Dict[str, str] = GatewayConnectionSetting.get_connector_spec_from_market_name(self.name)
-                return f"gateway.{self.type.name.lower()}.gateway_{connector_spec['chain_type'].lower()}_{self._get_module_package()}"
-            elif 'CLOB' in self.type.name:
-                return f"gateway.{self.type.name.lower()}.gateway_{self._get_module_package()}"
-            else:
-                raise ValueError(f"Unsupported connector type: {self.type}")
+            connector_type = get_connector_type(self.name)
+            if connector_type in [GatewayConnectorType.AMM, GatewayConnectorType.CLMM]:
+                return "gateway.gateway_lp"
+            # Default to swap for all other types
+            return "gateway.gateway_swap"
+
         return f"{self.base_name()}_{self._get_module_package()}"
 
     def module_path(self) -> str:
@@ -311,13 +119,14 @@ class ConnectorSetting(NamedTuple):
     def class_name(self) -> str:
         # return connector class name, e.g. BinanceExchange
         if self.uses_gateway_generic_connector():
-            file_name = self.module_name().split('.')[-1]
+            module_name = self.module_name()
+            file_name = module_name.split('.')[-1]
             splited_name = file_name.split('_')
             for i in range(len(splited_name)):
-                if splited_name[i] in ['evm', 'amm', 'clob', 'lp', 'sol', 'spot']:
-                    splited_name[i] = splited_name[i].upper()
-                else:
-                    splited_name[i] = splited_name[i].capitalize()
+                # if splited_name[i] in ['amm']:
+                #     splited_name[i] = splited_name[i].upper()
+                # else:
+                splited_name[i] = splited_name[i].capitalize()
             return "".join(splited_name)
         return "".join([o.capitalize() for o in self.module_name().split("_")])
 
@@ -344,7 +153,9 @@ class ConnectorSetting(NamedTuple):
         trading_pairs: Optional[List[str]] = None,
         trading_required: bool = False,
         api_keys: Optional[Dict[str, Any]] = None,
-        client_config_map: Optional["ClientConfigAdapter"] = None,
+        balance_asset_limit: Optional[Dict[str, Dict[str, Decimal]]] = None,
+        rate_limits_share_pct: Decimal = Decimal("100"),
+        gateway_config: Optional["GatewayConfigMap"] = None,
     ) -> Dict[str, Any]:
         trading_pairs = trading_pairs or []
         api_keys = api_keys or {}
@@ -352,34 +163,24 @@ class ConnectorSetting(NamedTuple):
             params = {}
             if self.config_keys is not None:
                 params: Dict[str, Any] = {k: v.value for k, v in self.config_keys.items()}
-            connector_spec: Dict[str, str] = GatewayConnectionSetting.get_connector_spec_from_market_name(self.name)
-            params.update(
-                connector_name=connector_spec["connector"],
-                chain=connector_spec["chain"],
-                network=connector_spec["network"],
-                address=connector_spec["wallet_address"],
-            )
-            if not self.uses_clob_connector():
-                params["additional_spenders"] = connector_spec.get("additional_spenders", [])
-            if self.uses_clob_connector():
-                params["api_data_source"] = self._load_clob_api_data_source(
-                    trading_pairs=trading_pairs,
-                    trading_required=trading_required,
-                    client_config_map=client_config_map,
-                    connector_spec=connector_spec,
-                )
+
+            # Gateway connector format: connector/type (e.g., uniswap/amm)
+            # Connector will handle chain, network, and wallet internally
+            params.update(connector_name=self.name)
+            params.update(gateway_config=gateway_config)
         elif not self.is_sub_domain:
             params = api_keys
         else:
             params: Dict[str, Any] = {k.replace(self.name, self.parent_name): v for k, v in api_keys.items()}
             params["domain"] = self.domain_parameter
+            params["rate_limits_share_pct"] = rate_limits_share_pct
 
         params["trading_pairs"] = trading_pairs
         params["trading_required"] = trading_required
-        params["client_config_map"] = client_config_map
+        params["balance_asset_limit"] = balance_asset_limit
         if (self.config_keys is not None
                 and type(self.config_keys) is not dict
-                and "receive_connector_configuration" in self.config_keys.__fields__
+                and "receive_connector_configuration" in self.config_keys.__class__.model_fields
                 and self.config_keys.receive_connector_configuration):
             params["connector_configuration"] = self.config_keys
 
@@ -402,7 +203,6 @@ class ConnectorSetting(NamedTuple):
             self,
             trading_pairs: Optional[List[str]] = None) -> 'ConnectorBase':
         from hummingbot.client.config.config_helpers import ClientConfigAdapter
-        from hummingbot.client.hummingbot_application import HummingbotApplication
 
         trading_pairs = trading_pairs or []
         connector_class = getattr(importlib.import_module(self.module_path()), self.class_name())
@@ -422,32 +222,13 @@ class ConnectorSetting(NamedTuple):
             trading_pairs=trading_pairs,
             trading_required=False,
             api_keys=kwargs,
-            client_config_map=HummingbotApplication.main_application().client_config_map,
+            rate_limits_share_pct=Decimal("100"),
+            balance_asset_limit={},
         )
         kwargs = self.add_domain_parameter(kwargs)
         connector = connector_class(**kwargs)
 
         return connector
-
-    def _load_clob_api_data_source(
-        self,
-        trading_pairs: List[str],
-        trading_required: bool,
-        client_config_map: "ClientConfigAdapter",
-        connector_spec: Dict[str, str],
-    ) -> "CLOBAPIDataSourceBase":
-        module_name = self.get_api_data_source_module_name()
-        parent_package = f"hummingbot.connector.gateway.{self._get_module_package()}.data_sources"
-        module_package = self.name.rsplit(sep="_", maxsplit=2)[0]
-        module_path = f"{parent_package}.{module_package}.{module_name}"
-        module: ModuleType = importlib.import_module(module_path)
-        api_data_source_class = getattr(module, self.get_api_data_source_class_name())
-        instance = api_data_source_class(
-            trading_pairs=trading_pairs,
-            connector_spec=connector_spec,
-            client_config_map=client_config_map,
-        )
-        return instance
 
     def _get_module_package(self) -> str:
         return self.type.name.lower()
@@ -524,26 +305,9 @@ class AllConnectorSettings:
                         use_eth_gas_lookup=parent.use_eth_gas_lookup,
                     )
 
-        # add gateway connectors
-        gateway_connections_conf: List[Dict[str, str]] = GatewayConnectionSetting.load()
-        trade_fee_settings: List[float] = [0.0, 0.0]  # we assume no swap fees for now
-        trade_fee_schema: TradeFeeSchema = cls._validate_trade_fee_schema("gateway", trade_fee_settings)
-
-        for connection_spec in gateway_connections_conf:
-            market_name: str = GatewayConnectionSetting.get_market_name_from_connector_spec(connection_spec)
-            cls.all_connector_settings[market_name] = ConnectorSetting(
-                name=market_name,
-                type=ConnectorType[connection_spec["trading_type"]],
-                centralised=False,
-                example_pair="WETH-USDC",
-                use_ethereum_wallet=False,
-                trade_fee_schema=trade_fee_schema,
-                config_keys=None,
-                is_sub_domain=False,
-                parent_name=None,
-                domain_parameter=None,
-                use_eth_gas_lookup=False,
-            )
+        # add gateway connectors dynamically from Gateway API
+        # Gateway connectors are now configured in Gateway, not in Hummingbot
+        # Gateway connectors will be added by GatewayHttpClient when it connects to Gateway
 
         return cls.all_connector_settings
 
@@ -583,7 +347,7 @@ class AllConnectorSettings:
         current_settings = cls.get_connector_settings()[connector]
         current_keys = current_settings.config_keys
         new_keys = (
-            current_keys if current_keys is None else current_keys.__class__.construct()
+            current_keys if current_keys is None else current_keys.__class__.model_construct()
         )
         cls.update_connector_config_keys(new_keys)
 
@@ -605,11 +369,7 @@ class AllConnectorSettings:
 
     @classmethod
     def get_derivative_names(cls) -> Set[str]:
-        return {cs.name for cs in cls.all_connector_settings.values() if cs.type in [ConnectorType.Derivative, ConnectorType.AMM_Perpetual, ConnectorType.CLOB_PERP]}
-
-    @classmethod
-    def get_derivative_dex_names(cls) -> Set[str]:
-        return {cs.name for cs in cls.all_connector_settings.values() if cs.type is ConnectorType.AMM_Perpetual}
+        return {cs.name for cs in cls.all_connector_settings.values() if cs.type in [ConnectorType.Derivative, ConnectorType.CLOB_PERP]}
 
     @classmethod
     def get_other_connector_names(cls) -> Set[str]:
@@ -621,18 +381,13 @@ class AllConnectorSettings:
 
     @classmethod
     def get_gateway_amm_connector_names(cls) -> Set[str]:
-        return {cs.name for cs in cls.get_connector_settings().values() if cs.type == ConnectorType.AMM}
+        # Gateway connectors are now stored in GATEWAY_CONNECTORS
+        return set(GATEWAY_CONNECTORS)
 
     @classmethod
-    def get_gateway_evm_amm_lp_connector_names(cls) -> Set[str]:
-        return {cs.name for cs in cls.all_connector_settings.values() if cs.type == ConnectorType.AMM_LP}
-
-    @classmethod
-    def get_gateway_clob_connector_names(cls) -> Set[str]:
-        return {
-            cs.name for cs in cls.all_connector_settings.values()
-            if cs.type == ConnectorType.CLOB_SPOT
-        }
+    def get_gateway_ethereum_connector_names(cls) -> Set[str]:
+        # Return Ethereum-based gateway connectors
+        return set(GATEWAY_ETH_CONNECTORS)
 
     @classmethod
     def get_example_pairs(cls) -> Dict[str, str]:
@@ -661,32 +416,6 @@ class AllConnectorSettings:
         return trade_fee_schema
 
 
-def ethereum_wallet_required() -> bool:
-    """
-    Check if an Ethereum wallet is required for any of the exchanges the user's config uses.
-    """
-    return any(e in AllConnectorSettings.get_eth_wallet_connector_names() for e in required_exchanges)
-
-
-def ethereum_gas_station_required() -> bool:
-    """
-    Check if the user's config needs to look up gas costs from an Ethereum gas station.
-    """
-    return any(name for name, con_set in AllConnectorSettings.get_connector_settings().items() if name in required_exchanges
-               and con_set.use_eth_gas_lookup)
-
-
-def ethereum_required_trading_pairs() -> List[str]:
-    """
-    Check if the trading pairs require an ethereum wallet (ERC-20 tokens).
-    """
-    ret_val = []
-    for conn, t_pair in requried_connector_trading_pairs.items():
-        if AllConnectorSettings.get_connector_settings()[conn].use_ethereum_wallet:
-            ret_val += t_pair
-    return ret_val
-
-
 def gateway_connector_trading_pairs(connector: str) -> List[str]:
     """
     Returns trading pair used by specified gateway connnector.
@@ -705,3 +434,6 @@ MAXIMUM_TRADE_FILLS_DISPLAY_OUTPUT = 100
 
 STRATEGIES: List[str] = get_strategy_list()
 GATEWAY_CONNECTORS: List[str] = []
+GATEWAY_ETH_CONNECTORS: List[str] = []
+GATEWAY_NAMESPACES: List[str] = []
+GATEWAY_CHAINS: List[str] = []

@@ -1,10 +1,9 @@
 from decimal import Decimal
-from typing import Optional
+from typing import Literal, Optional
 
-from pydantic import Field, SecretStr
-from pydantic.class_validators import validator
+from pydantic import ConfigDict, Field, SecretStr, field_validator
 
-from hummingbot.client.config.config_data_types import BaseConnectorConfigMap, ClientFieldData
+from hummingbot.client.config.config_data_types import BaseConnectorConfigMap
 from hummingbot.core.data_type.trade_fee import TradeFeeSchema
 
 # Maker rebates(-0.02%) are paid out continuously on each trade directly to the trading wallet.(https://hyperliquid.gitbook.io/hyperliquid-docs/trading/fees)
@@ -21,56 +20,112 @@ EXAMPLE_PAIR = "BTC-USD"
 BROKER_ID = "HBOT"
 
 
+def validate_wallet_mode(value: str) -> Optional[str]:
+    """
+    Check if the value is a valid mode
+    """
+    allowed = ('arb_wallet', 'api_wallet')
+
+    if isinstance(value, str):
+        formatted_value = value.strip().lower()
+
+        if formatted_value in allowed:
+            return formatted_value
+
+    raise ValueError(f"Invalid wallet mode '{value}', choose from: {allowed}")
+
+
 def validate_bool(value: str) -> Optional[str]:
     """
     Permissively interpret a string as a boolean
     """
-    valid_values = ('true', 'yes', 'y', 'false', 'no', 'n')
-    if value.lower() not in valid_values:
-        return f"Invalid value, please choose value from {valid_values}"
+    if isinstance(value, bool):
+        return value
+
+    if isinstance(value, str):
+        formatted_value = value.strip().lower()
+        truthy = {"yes", "y", "true", "1"}
+        falsy = {"no", "n", "false", "0"}
+
+        if formatted_value in truthy:
+            return True
+        if formatted_value in falsy:
+            return False
+
+    raise ValueError(f"Invalid value, please choose value from {truthy.union(falsy)}")
 
 
 class HyperliquidPerpetualConfigMap(BaseConnectorConfigMap):
-    connector: str = Field(default="hyperliquid_perpetual", client_data=None)
-    hyperliquid_perpetual_api_secret: SecretStr = Field(
-        default=...,
-        client_data=ClientFieldData(
-            prompt=lambda cm: "Enter your Arbitrum wallet private key",
-            is_secure=True,
-            is_connect_key=True,
-            prompt_on_new=True,
-        )
+    connector: str = "hyperliquid_perpetual"
+    hyperliquid_perpetual_mode: Literal["arb_wallet", "api_wallet"] = Field(
+        default="arb_wallet",
+        json_schema_extra={
+            "prompt": "Select connection mode (arb_wallet/api_wallet)",
+            "is_secure": False,
+            "is_connect_key": True,
+            "prompt_on_new": True,
+        }
     )
     use_vault: bool = Field(
         default="no",
-        client_data=ClientFieldData(
-            prompt=lambda cm: "Do you want to use the vault address?(Yes/No)",
-            is_secure=False,
-            is_connect_key=True,
-            prompt_on_new=True,
-        ),
+        json_schema_extra={
+            "prompt": "Do you want to use the Vault address? (Yes/No)",
+            "is_secure": False,
+            "is_connect_key": True,
+            "prompt_on_new": True,
+        }
     )
-    hyperliquid_perpetual_api_key: SecretStr = Field(
+    hyperliquid_perpetual_address: SecretStr = Field(
         default=...,
-        client_data=ClientFieldData(
-            prompt=lambda cm: "Enter your Arbitrum or vault address",
-            is_secure=True,
-            is_connect_key=True,
-            prompt_on_new=True,
-        )
+        json_schema_extra={
+            "prompt": lambda cm: (
+                "Enter your Vault address"
+                if getattr(cm, "use_vault", False)
+                else "Enter your Arbitrum wallet address"
+            ),
+            "is_secure": True,
+            "is_connect_key": True,
+            "prompt_on_new": True,
+        }
     )
+    hyperliquid_perpetual_secret_key: SecretStr = Field(
+        default=...,
+        json_schema_extra={
+            "prompt": lambda cm: {
+                "arb_wallet": "Enter your Arbitrum wallet private key",
+                "api_wallet": "Enter your API wallet private key (from https://app.hyperliquid.xyz/API)"
+            }.get(getattr(cm, "hyperliquid_perpetual_mode", "arb_wallet")),
+            "is_secure": True,
+            "is_connect_key": True,
+            "prompt_on_new": True,
+        }
+    )
+    model_config = ConfigDict(title="hyperliquid_perpetual")
 
-    @validator("use_vault", pre=True)
-    def validate_bool(cls, v: str):
+    @field_validator("hyperliquid_perpetual_mode", mode="before")
+    @classmethod
+    def validate_mode(cls, value: str) -> str:
         """Used for client-friendly error output."""
-        if isinstance(v, str):
-            ret = validate_bool(v)
-            if ret is not None:
-                raise ValueError(ret)
-        return v
+        return validate_wallet_mode(value)
+
+    @field_validator("use_vault", mode="before")
+    @classmethod
+    def validate_use_vault(cls, value: str):
+        """Used for client-friendly error output."""
+        return validate_bool(value)
+
+    @field_validator("hyperliquid_perpetual_address", mode="before")
+    @classmethod
+    def validate_address(cls, value: str):
+        """Used for client-friendly error output."""
+        if isinstance(value, str):
+            if value.startswith("HL:"):
+                # Strip out the "HL:" that the HyperLiquid Vault page adds to vault addresses
+                return value[3:]
+        return value
 
 
-KEYS = HyperliquidPerpetualConfigMap.construct()
+KEYS = HyperliquidPerpetualConfigMap.model_construct()
 
 OTHER_DOMAINS = ["hyperliquid_perpetual_testnet"]
 OTHER_DOMAINS_PARAMETER = {"hyperliquid_perpetual_testnet": "hyperliquid_perpetual_testnet"}
@@ -79,46 +134,75 @@ OTHER_DOMAINS_DEFAULT_FEES = {"hyperliquid_perpetual_testnet": [0, 0.025]}
 
 
 class HyperliquidPerpetualTestnetConfigMap(BaseConnectorConfigMap):
-    connector: str = Field(default="hyperliquid_perpetual_testnet", client_data=None)
-    hyperliquid_perpetual_testnet_api_secret: SecretStr = Field(
-        default=...,
-        client_data=ClientFieldData(
-            prompt=lambda cm: "Enter your Arbitrum wallet private key",
-            is_secure=True,
-            is_connect_key=True,
-            prompt_on_new=True,
-        )
+    connector: str = "hyperliquid_perpetual_testnet"
+    hyperliquid_perpetual_testnet_mode: Literal["arb_wallet", "api_wallet"] = Field(
+        default="arb_wallet",
+        json_schema_extra={
+            "prompt": "Select connection mode (arb_wallet/api_wallet)",
+            "is_secure": False,
+            "is_connect_key": True,
+            "prompt_on_new": True,
+        }
     )
     use_vault: bool = Field(
         default="no",
-        client_data=ClientFieldData(
-            prompt=lambda cm: "Do you want to use the vault address?(Yes/No)",
-            is_secure=False,
-            is_connect_key=True,
-            prompt_on_new=True,
-        ),
+        json_schema_extra={
+            "prompt": "Do you want to use the Vault address? (Yes/No)",
+            "is_secure": False,
+            "is_connect_key": True,
+            "prompt_on_new": True,
+        }
     )
-    hyperliquid_perpetual_testnet_api_key: SecretStr = Field(
+    hyperliquid_perpetual_testnet_address: SecretStr = Field(
         default=...,
-        client_data=ClientFieldData(
-            prompt=lambda cm: "Enter your Arbitrum or vault address",
-            is_secure=True,
-            is_connect_key=True,
-            prompt_on_new=True,
-        )
+        json_schema_extra={
+            "prompt": lambda cm: (
+                "Enter your Vault address"
+                if getattr(cm, "use_vault", False)
+                else "Enter your Arbitrum wallet address"
+            ),
+            "is_secure": True,
+            "is_connect_key": True,
+            "prompt_on_new": True,
+        }
     )
+    hyperliquid_perpetual_testnet_secret_key: SecretStr = Field(
+        default=...,
+        json_schema_extra={
+            "prompt": lambda cm: {
+                "arb_wallet": "Enter your Arbitrum wallet private key",
+                "api_wallet": "Enter your API wallet private key (from https://app.hyperliquid.xyz/API)"
+            }.get(getattr(cm, "hyperliquid_perpetual_testnet_mode", "arb_wallet")),
+            "is_secure": True,
+            "is_connect_key": True,
+            "prompt_on_new": True,
+        }
+    )
+    model_config = ConfigDict(title="hyperliquid_perpetual")
 
-    class Config:
-        title = "hyperliquid_perpetual"
-
-    @validator("use_vault", pre=True)
-    def validate_bool(cls, v: str):
+    @field_validator("hyperliquid_perpetual_testnet_mode", mode="before")
+    @classmethod
+    def validate_mode(cls, value: str) -> str:
         """Used for client-friendly error output."""
-        if isinstance(v, str):
-            ret = validate_bool(v)
-            if ret is not None:
-                raise ValueError(ret)
-        return v
+        return validate_wallet_mode(value)
+
+    @field_validator("use_vault", mode="before")
+    @classmethod
+    def validate_use_vault(cls, value: str):
+        """Used for client-friendly error output."""
+        return validate_bool(value)
+
+    @field_validator("hyperliquid_perpetual_testnet_address", mode="before")
+    @classmethod
+    def validate_address(cls, value: str):
+        """Used for client-friendly error output."""
+        if isinstance(value, str):
+            if value.startswith("HL:"):
+                # Strip out the "HL:" that the HyperLiquid Vault page adds to vault addresses
+                return value[3:]
+        return value
 
 
-OTHER_DOMAINS_KEYS = {"hyperliquid_perpetual_testnet": HyperliquidPerpetualTestnetConfigMap.construct()}
+OTHER_DOMAINS_KEYS = {
+    "hyperliquid_perpetual_testnet": HyperliquidPerpetualTestnetConfigMap.model_construct()
+}

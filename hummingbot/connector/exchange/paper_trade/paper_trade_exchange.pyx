@@ -153,15 +153,16 @@ cdef class PaperTradeExchange(ExchangeBase):
 
     def __init__(
         self,
-        client_config_map: "ClientConfigAdapter",
         order_book_tracker: OrderBookTracker,
         target_market: Callable,
         exchange_name: str,
+        balance_asset_limit: Optional[Dict[str, Dict[str, Decimal]]] = None,
+        rate_limits_share_pct: Decimal = Decimal("100"),
     ):
         order_book_tracker.data_source.order_book_create_function = lambda: CompositeOrderBook()
+        super().__init__(balance_asset_limit, rate_limits_share_pct)
         self._set_order_book_tracker(order_book_tracker)
         self._budget_checker = BudgetChecker(exchange=self)
-        super(ExchangeBase, self).__init__(client_config_map)
         self._exchange_name = exchange_name
         self._account_balances = {}
         self._account_available_balances = {}
@@ -450,7 +451,7 @@ cdef class PaperTradeExchange(ExchangeBase):
 
         order_book = self.order_books[trading_pair_str]
 
-        buy_entries = order_book.simulate_buy(amount)
+        buy_entries = order_book.simulate_buy(float(amount))
 
         # Get the weighted average price of the trade
         avg_price = Decimal(0)
@@ -532,7 +533,7 @@ cdef class PaperTradeExchange(ExchangeBase):
 
         order_book = self.order_books[trading_pair_str]
 
-        sell_entries = order_book.simulate_sell(amount)
+        sell_entries = order_book.simulate_sell(float(amount))
 
         # Get the weighted average price of the trade
         avg_price = Decimal(0)

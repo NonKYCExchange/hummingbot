@@ -12,8 +12,6 @@ from aioresponses.core import RequestCall
 
 import hummingbot.connector.derivative.kucoin_perpetual.kucoin_perpetual_constants as CONSTANTS
 import hummingbot.connector.derivative.kucoin_perpetual.kucoin_perpetual_web_utils as web_utils
-from hummingbot.client.config.client_config_map import ClientConfigMap
-from hummingbot.client.config.config_helpers import ClientConfigAdapter
 from hummingbot.connector.derivative.kucoin_perpetual.kucoin_perpetual_derivative import KucoinPerpetualDerivative
 from hummingbot.connector.derivative.position import Position
 from hummingbot.connector.test_support.perpetual_derivative_test import AbstractPerpetualDerivativeTests
@@ -143,7 +141,6 @@ class KucoinPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.PerpetualD
                         "Binance",
                         "Kucoin",
                         "Poloniex",
-                        "Hitbtc"
                     ],
                     "lowPrice": 38040,
                     "highPrice": 44948,
@@ -212,7 +209,6 @@ class KucoinPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.PerpetualD
                         "Binance",
                         "Kucoin",
                         "Poloniex",
-                        "Hitbtc"
                     ],
                     "premiumsSymbol1M": self.exchange_trading_pair,
                     "premiumsSymbol8H": self.exchange_trading_pair,
@@ -281,7 +277,6 @@ class KucoinPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.PerpetualD
                         "Binance",
                         "Kucoin",
                         "Poloniex",
-                        "Hitbtc"
                     ],
                     "lowPrice": 38040,
                     "highPrice": 44948,
@@ -337,7 +332,6 @@ class KucoinPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.PerpetualD
                         "Binance",
                         "Kucoin",
                         "Poloniex",
-                        "Hitbtc"
                     ],
                     "lowPrice": 38040,
                     "highPrice": 44948,
@@ -486,7 +480,7 @@ class KucoinPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.PerpetualD
         datetime_str = str(
             pd.Timestamp.utcfromtimestamp(
                 self.target_funding_info_next_funding_utc_timestamp)
-        ).replace(" ", "T") + "Z"
+        ).replace(" ", "T")  # + "Z"
         return datetime_str
 
     @property
@@ -494,7 +488,7 @@ class KucoinPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.PerpetualD
         datetime_str = str(
             pd.Timestamp.utcfromtimestamp(
                 self.target_funding_info_next_funding_utc_timestamp_ws_updated)
-        ).replace(" ", "T") + "Z"
+        ).replace(" ", "T")  # + "Z"
         return datetime_str
 
     @property
@@ -502,7 +496,7 @@ class KucoinPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.PerpetualD
         datetime_str = str(
             pd.Timestamp.utcfromtimestamp(
                 self.target_funding_payment_timestamp)
-        ).replace(" ", "T") + "Z"
+        ).replace(" ", "T")  # + "Z"
         return datetime_str
 
     @property
@@ -591,12 +585,10 @@ class KucoinPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.PerpetualD
         return f"{base_token}{quote_token}"
 
     def create_exchange_instance(self):
-        client_config_map = ClientConfigAdapter(ClientConfigMap())
         exchange = KucoinPerpetualDerivative(
-            client_config_map,
-            self.api_key,
-            self.api_secret,
-            self.passphrase,
+            kucoin_perpetual_api_key=self.api_key,
+            kucoin_perpetual_secret_key=self.api_secret,
+            kucoin_perpetual_passphrase=self.passphrase,
             trading_pairs=[self.trading_pair],
         )
         exchange._last_trade_history_timestamp = self.latest_trade_hist_timestamp
@@ -1108,9 +1100,7 @@ class KucoinPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.PerpetualD
         )
 
     def test_user_stream_balance_update(self):
-        client_config_map = ClientConfigAdapter(ClientConfigMap())
         non_linear_connector = KucoinPerpetualDerivative(
-            client_config_map=client_config_map,
             kucoin_perpetual_api_key=self.api_key,
             kucoin_perpetual_secret_key=self.api_secret,
             trading_pairs=[self.base_asset],
@@ -1132,15 +1122,12 @@ class KucoinPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.PerpetualD
         self.assertEqual(Decimal("25"), self.exchange.get_balance(self.base_asset))
 
     def test_supported_position_modes(self):
-        client_config_map = ClientConfigAdapter(ClientConfigMap())
         linear_connector = KucoinPerpetualDerivative(
-            client_config_map=client_config_map,
             kucoin_perpetual_api_key=self.api_key,
             kucoin_perpetual_secret_key=self.api_secret,
             trading_pairs=[self.trading_pair],
         )
         non_linear_connector = KucoinPerpetualDerivative(
-            client_config_map=client_config_map,
             kucoin_perpetual_api_key=self.api_key,
             kucoin_perpetual_secret_key=self.api_secret,
             trading_pairs=[self.non_linear_trading_pair],
@@ -1153,9 +1140,7 @@ class KucoinPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.PerpetualD
         self.assertEqual(expected_result, non_linear_connector.supported_position_modes())
 
     def test_set_position_mode_nonlinear(self):
-        client_config_map = ClientConfigAdapter(ClientConfigMap())
         non_linear_connector = KucoinPerpetualDerivative(
-            client_config_map=client_config_map,
             kucoin_perpetual_api_key=self.api_key,
             kucoin_perpetual_secret_key=self.api_secret,
             trading_pairs=[self.non_linear_trading_pair],
@@ -1184,13 +1169,14 @@ class KucoinPerpetualDerivativeTests(AbstractPerpetualDerivativeTests.PerpetualD
         self.assertEqual(self.non_linear_quote_asset, non_linear_buy_collateral_token)
         self.assertEqual(self.non_linear_quote_asset, non_linear_sell_collateral_token)
 
-    def test_time_synchronizer_related_reqeust_error_detection(self):
-        error_code_str = self.exchange._format_ret_code_for_print(ret_code=CONSTANTS.RET_CODE_AUTH_TIMESTAMP_ERROR)
-        exception = IOError(f"{error_code_str} - Failed to cancel order for timestamp reason.")
+    def test_time_synchronizer_related_request_error_detection(self):
+        error_code = CONSTANTS.RET_CODE_AUTH_TIMESTAMP_ERROR
+        response = {"code": error_code, "msg": "Invalid KC-API-TIMESTAMP"}
+        exception = IOError(f"Error executing request GET https://someurl. HTTP status is 400. Error: {json.dumps(response)}")
         self.assertTrue(self.exchange._is_request_exception_related_to_time_synchronizer(exception))
 
-        error_code_str = self.exchange._format_ret_code_for_print(ret_code=CONSTANTS.RET_CODE_ORDER_NOT_EXISTS)
-        exception = IOError(f"{error_code_str} - Failed to cancel order because it was not found.")
+        error_code = CONSTANTS.RET_CODE_ORDER_NOT_EXISTS
+        exception = IOError(f"{error_code} - Failed to cancel order because it was not found.")
         self.assertFalse(self.exchange._is_request_exception_related_to_time_synchronizer(exception))
 
     def place_buy_limit_maker_order(

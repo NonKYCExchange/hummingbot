@@ -2,7 +2,7 @@ import asyncio
 import re
 from collections import defaultdict
 from decimal import Decimal
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from bidict import bidict
 
@@ -32,9 +32,6 @@ from hummingbot.core.utils.tracking_nonce import NonceCreator
 from hummingbot.core.web_assistant.connections.data_types import RESTMethod
 from hummingbot.core.web_assistant.web_assistants_factory import WebAssistantsFactory
 
-if TYPE_CHECKING:
-    from hummingbot.client.config.config_helpers import ClientConfigAdapter
-
 
 class KrakenExchange(ExchangePyBase):
     UPDATE_ORDER_STATUS_MIN_INTERVAL = 10.0
@@ -44,9 +41,10 @@ class KrakenExchange(ExchangePyBase):
     REQUEST_ATTEMPTS = 5
 
     def __init__(self,
-                 client_config_map: "ClientConfigAdapter",
                  kraken_api_key: str,
                  kraken_secret_key: str,
+                 balance_asset_limit: Optional[Dict[str, Dict[str, Decimal]]] = None,
+                 rate_limits_share_pct: Decimal = Decimal("100"),
                  trading_pairs: Optional[List[str]] = None,
                  trading_required: bool = True,
                  domain: str = CONSTANTS.DEFAULT_DOMAIN,
@@ -57,13 +55,13 @@ class KrakenExchange(ExchangePyBase):
         self._domain = domain
         self._trading_required = trading_required
         self._trading_pairs = trading_pairs
-        self._kraken_api_tier = KrakenAPITier(kraken_api_tier.upper())
+        self._kraken_api_tier = KrakenAPITier(kraken_api_tier.upper() if kraken_api_tier else "STARTER")
         self._asset_pairs = {}
-        self._client_config = client_config_map
         self._client_order_id_nonce_provider = NonceCreator.for_microseconds()
+        self._rate_limits_share_pct = rate_limits_share_pct
         self._throttler = self._build_async_throttler(api_tier=self._kraken_api_tier)
 
-        super().__init__(client_config_map)
+        super().__init__(balance_asset_limit, rate_limits_share_pct)
 
     @staticmethod
     def kraken_order_type(order_type: OrderType) -> str:
@@ -129,7 +127,7 @@ class KrakenExchange(ExchangePyBase):
         return [OrderType.LIMIT, OrderType.LIMIT_MAKER, OrderType.MARKET]
 
     def _build_async_throttler(self, api_tier: KrakenAPITier) -> AsyncThrottler:
-        limits_pct = self._client_config.rate_limits_share_pct
+        limits_pct = self._rate_limits_share_pct
         if limits_pct < Decimal("100"):
             self.logger().warning(
                 f"The Kraken API does not allow enough bandwidth for a reduced rate-limit share percentage."
@@ -618,6 +616,22 @@ class KrakenExchange(ExchangePyBase):
             self._account_balances[cleaned_name] = total_balance
             remote_asset_names.add(cleaned_name)
 
+        for cleaned_name, ava_balance in self._account_available_balances.items():
+            if cleaned_name.endswith(".F"):
+                asset_normal_name = cleaned_name.split(".")[0]
+                cleaned_normal_name = convert_from_exchange_symbol(asset_normal_name).upper()
+                new_total_amount = self._account_available_balances.get(cleaned_normal_name, 0) + ava_balance
+                self._account_available_balances.update({cleaned_normal_name: new_total_amount})
+                self._account_available_balances.update({cleaned_name: 0})
+
+        for cleaned_name, total_balance in self._account_balances.items():
+            if cleaned_name.endswith(".F"):
+                asset_normal_name = cleaned_name.split(".")[0]
+                cleaned_normal_name = convert_from_exchange_symbol(asset_normal_name).upper()
+                new_total_amount = self._account_balances.get(cleaned_normal_name, 0) + total_balance
+                self._account_balances.update({cleaned_normal_name: new_total_amount})
+                self._account_balances.update({cleaned_name: 0})
+
         asset_names_to_remove = local_asset_names.difference(remote_asset_names)
         for asset_name in asset_names_to_remove:
             del self._account_available_balances[asset_name]
@@ -629,14 +643,42 @@ class KrakenExchange(ExchangePyBase):
             mapping[symbol_data["altname"]] = convert_from_exchange_trading_pair(symbol_data["wsname"])
         self._set_trading_pair_symbol_map(mapping)
 
-    async def _get_last_traded_price(self, trading_pair: str) -> float:
-        params = {
-            "pair": await self.exchange_symbol_associated_to_pair(trading_pair=trading_pair)
+    async def get_last_traded_prices(self, trading_pairs: List[str] = None) -> Dict[str, float]:
+        """
+        Gets the last traded price for multiple trading pairs in a single API call.
+        Assumes trading_pairs is always provided based on exchange_base implementation.
+        """
+        if len(trading_pairs) == 0:
+            return {}
+        if len(trading_pairs) == 1:
+            return {trading_pairs[0]: await self._get_last_traded_price(trading_pairs[0])}
+
+        # For multiple trading pairs, get all tickers in one call and filter
+        resp_json = await self._get_ticker_data()
+        exchange_symbols = [await self.exchange_symbol_associated_to_pair(tp) for tp in trading_pairs]
+        # Create a mapping from exchange symbols to trading pairs to avoid repeated async calls
+        symbol_to_pair = {symbol: tp for symbol, tp in zip(exchange_symbols, trading_pairs)}
+        return {
+            symbol_to_pair[symbol]: float(data["c"][0])
+            for symbol, data in resp_json.items()
+            if symbol in symbol_to_pair
         }
-        resp_json = await self._api_request_with_retry(
+
+    async def _get_ticker_data(self, trading_pair: str = None) -> Dict[str, Any]:
+        """
+        Shared method to fetch ticker data from Kraken, for one or all trading pairs.
+        """
+        params = {}
+        if trading_pair:
+            params["pair"] = await self.exchange_symbol_associated_to_pair(trading_pair=trading_pair)
+
+        return await self._api_request_with_retry(
             method=RESTMethod.GET,
             path_url=CONSTANTS.TICKER_PATH_URL,
             params=params
         )
+
+    async def _get_last_traded_price(self, trading_pair: str) -> float:
+        resp_json = await self._get_ticker_data(trading_pair=trading_pair)
         record = list(resp_json.values())[0]
         return float(record["c"][0])

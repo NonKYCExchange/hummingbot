@@ -18,6 +18,14 @@
 
 **Note:** Tests are crucial. If your pull request contains new, testable behavior, please submit tests. Refer to the 'Unit Test Coverage' section for more information.
 
+## Development Environment Setup
+
+### IDE Configuration
+If you're using VS Code or Cursor IDE, please refer to our [VS Code/Cursor Setup Guide](./CURSOR_VSCODE_SETUP.md) for detailed instructions on setting up your development environment, including:
+- VS Code/Cursor settings configuration
+- Debugging setup
+- Test discovery configuration
+
 ## Detailed Workflow
 
 ### 1. Fork the Repository
@@ -80,7 +88,7 @@ If the Foundation team requests changes, make more commits to your branch to add
 
 ## Unit Test Coverage
 
-A minimum of 75% unit test coverage is required for all changes included in a pull request. However, some components, like UI components, are excluded from this validation.
+A minimum of 80% unit test coverage is required for all changes included in a pull request. However, some components, like UI components, are excluded from this validation.
 
 To run tests locally, run `make test` after activating the environment.
 

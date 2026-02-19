@@ -8,8 +8,8 @@ class MexcUtilTestCases(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         super().setUpClass()
-        cls.base_asset = "COINALPHA"
-        cls.quote_asset = "HBOT"
+        cls.base_asset = "BTC"
+        cls.quote_asset = "USDC"
         cls.trading_pair = f"{cls.base_asset}-{cls.quote_asset}"
         cls.hb_trading_pair = f"{cls.base_asset}-{cls.quote_asset}"
         cls.ex_trading_pair = f"{cls.base_asset}{cls.quote_asset}"
@@ -30,14 +30,14 @@ class MexcUtilTestCases(unittest.TestCase):
         self.assertFalse(utils.is_exchange_information_valid(invalid_info_2))
 
         invalid_info_3 = {
-            "status": "ENABLED",
+            "status": "1",
             "permissions": ["MARGIN"],
         }
 
         self.assertFalse(utils.is_exchange_information_valid(invalid_info_3))
 
         invalid_info_4 = {
-            "status": "ENABLED",
+            "status": "1",
             "permissions": ["SPOT"],
         }
 

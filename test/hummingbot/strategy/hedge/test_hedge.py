@@ -27,10 +27,9 @@ class HedgeConfigMapPydanticTest(unittest.TestCase):
         base_asset = "BTC"
         quote_asset = "USDT"
         self.markets = {
-            "kucoin": MockPaperExchange(client_config_map=self.client_config_map),
-            "binance": MockPaperExchange(client_config_map=self.client_config_map),
+            "kucoin": MockPaperExchange(),
+            "binance": MockPaperExchange(),
             "binance_perpetual": MockPerpConnector(
-                client_config_map=self.client_config_map,
                 buy_collateral_token=quote_asset,
                 sell_collateral_token=quote_asset
             ),
@@ -108,7 +107,7 @@ class HedgeConfigMapPydanticTest(unittest.TestCase):
             'hedge_leverage': 25,
             'hedge_position_mode': 'ONEWAY',
             "hedge_connector": 'binance_perpetual',
-            "hedge_markets": 'BTC-USDT',
+            "hedge_markets": ['BTC-USDT'],
             "connector_0": 'n',
             "connector_1": 'n',
             "connector_2": 'n',

@@ -4,9 +4,10 @@ from typing import TYPE_CHECKING, Any, Dict, List, Mapping, Optional
 
 from google.protobuf import any_pb2
 from pyinjective import Transaction
-from pyinjective.async_client import AsyncClient
-from pyinjective.composer import Composer, injective_exchange_tx_pb
+from pyinjective.async_client_v2 import DEFAULT_TIMEOUTHEIGHT, AsyncClient
+from pyinjective.composer_v2 import Composer, injective_exchange_tx_pb
 from pyinjective.core.network import Network
+from pyinjective.indexer_client import IndexerClient
 from pyinjective.wallet import Address, PrivateKey
 
 from hummingbot.connector.exchange.injective_v2 import injective_constants as CONSTANTS
@@ -43,15 +44,16 @@ class InjectiveGranteeDataSource(InjectiveDataSource):
             network: Network,
             rate_limits: List[RateLimit],
             fee_calculator_mode: "InjectiveFeeCalculatorMode",
-            use_secure_connection: bool = True,
     ):
         self._network = network
         self._client = AsyncClient(
             network=self._network,
-            insecure=not use_secure_connection,
+        )
+        self._indexer_client = IndexerClient(
+            network=self._network,
         )
         self._composer = None
-        self._query_executor = PythonSDKInjectiveQueryExecutor(sdk_client=self._client)
+        self._query_executor = PythonSDKInjectiveQueryExecutor(sdk_client=self._client, indexer_client=self._indexer_client)
         self._fee_calculator_mode = fee_calculator_mode
         self._fee_calculator = None
 
@@ -76,6 +78,8 @@ class InjectiveGranteeDataSource(InjectiveDataSource):
         self._publisher = PubSub()
         self._last_received_message_timestamp = 0
         self._throttler = AsyncThrottler(rate_limits=rate_limits)
+
+        self._gas_price = Decimal(str(CONSTANTS.TX_GAS_PRICE))
 
         self._is_timeout_height_initialized = False
         self._is_trading_account_initialized = False
@@ -128,6 +132,14 @@ class InjectiveGranteeDataSource(InjectiveDataSource):
     @property
     def network_name(self) -> str:
         return self._network.string()
+
+    @property
+    def gas_price(self) -> Decimal:
+        return self._gas_price
+
+    @gas_price.setter
+    def gas_price(self, gas_price: Decimal):
+        self._gas_price = gas_price
 
     @property
     def last_received_message_timestamp(self) -> float:
@@ -348,6 +360,9 @@ class InjectiveGranteeDataSource(InjectiveDataSource):
 
         return resulting_trading_pair
 
+    def update_timeout_height(self, block_height: int):
+        self._client.timeout_height = block_height + DEFAULT_TIMEOUTHEIGHT
+
     async def _initialize_timeout_height(self):
         await self._client.sync_timeout_height()
         self._is_timeout_height_initialized = True
@@ -433,7 +448,7 @@ class InjectiveGranteeDataSource(InjectiveDataSource):
             )
             all_messages.append(message)
 
-        delegated_message = composer.MsgExec(
+        delegated_message = composer.msg_exec(
             grantee=self.trading_account_injective_address,
             msgs=all_messages
         )
@@ -452,7 +467,7 @@ class InjectiveGranteeDataSource(InjectiveDataSource):
             spot_orders_to_cancel=spot_orders_to_cancel,
             derivative_orders_to_cancel=derivative_orders_to_cancel,
         )
-        delegated_message = composer.MsgExec(
+        delegated_message = composer.msg_exec(
             grantee=self.trading_account_injective_address,
             msgs=[message]
         )
@@ -471,7 +486,7 @@ class InjectiveGranteeDataSource(InjectiveDataSource):
             spot_market_ids_to_cancel_all=spot_markets_ids,
             derivative_market_ids_to_cancel_all=derivative_markets_ids,
         )
-        delegated_message = composer.MsgExec(
+        delegated_message = composer.msg_exec(
             grantee=self.trading_account_injective_address,
             msgs=[message]
         )
@@ -481,13 +496,11 @@ class InjectiveGranteeDataSource(InjectiveDataSource):
         composer = await self.composer()
         order_hash = order.exchange_order_id
         cid = order.client_order_id if order_hash is None else None
-        order_data = composer.order_data(
+        order_data = composer.order_data_without_mask(
             market_id=market_id,
             subaccount_id=self.portfolio_account_subaccount_id,
             order_hash=order_hash,
             cid=cid,
-            is_buy=order.trade_type == TradeType.BUY,
-            is_market_order=order.order_type == OrderType.MARKET,
         )
 
         return order_data
@@ -506,10 +519,15 @@ class InjectiveGranteeDataSource(InjectiveDataSource):
         await super()._process_transaction_update(transaction_event=transaction_event)
 
     async def _configure_gas_fee_for_transaction(self, transaction: Transaction):
+        multiplier = (None
+                      if CONSTANTS.GAS_LIMIT_ADJUSTMENT_MULTIPLIER is None
+                      else Decimal(str(CONSTANTS.GAS_LIMIT_ADJUSTMENT_MULTIPLIER)))
         if self._fee_calculator is None:
             self._fee_calculator = self._fee_calculator_mode.create_calculator(
                 client=self._client,
                 composer=await self.composer(),
+                gas_price=int(self.gas_price),
+                gas_limit_adjustment_multiplier=multiplier,
             )
 
         await self._fee_calculator.configure_gas_fee_for_transaction(
