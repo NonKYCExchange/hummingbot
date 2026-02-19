@@ -3,8 +3,7 @@ import hmac
 import json
 import random
 import string
-from collections import OrderedDict
-from typing import Any, Dict
+from typing import Dict
 from urllib.parse import urlencode
 
 from hummingbot.connector.time_synchronizer import TimeSynchronizer
@@ -62,7 +61,7 @@ class NonkycAuth(AuthBase):
         return payload
 
     def header_for_authentication(self, data: str) -> Dict[str, str]:
-        timestamp =  int(self.time_provider.time() * 1e4)
+        timestamp = int(self.time_provider.time() * 1e4)
         message_to_sign = f"{self.api_key}{data}{timestamp}"
         signature = self._generate_signature(message_to_sign)
         return {"X-API-KEY": self.api_key,

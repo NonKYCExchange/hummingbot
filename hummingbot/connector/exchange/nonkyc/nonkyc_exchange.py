@@ -1,6 +1,7 @@
 import asyncio
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
+
 from bidict import bidict
 
 from hummingbot.connector.constants import s_decimal_NaN
@@ -448,7 +449,6 @@ class NonkycExchange(ExchangePyBase):
         return trade_updates
 
     async def _request_order_status(self, tracked_order: InFlightOrder) -> OrderUpdate:
-        trading_pair = await self.exchange_symbol_associated_to_pair(trading_pair=tracked_order.trading_pair)
         updated_order_data = await self._api_get(
             path_url=f"{CONSTANTS.ORDER_INFO_PATH_URL}/{tracked_order.client_order_id}",
             is_auth_required=True,

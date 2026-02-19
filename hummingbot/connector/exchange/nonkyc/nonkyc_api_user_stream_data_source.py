@@ -1,4 +1,3 @@
-import asyncio
 from typing import TYPE_CHECKING, List, Optional
 
 from hummingbot.connector.exchange.nonkyc import nonkyc_constants as CONSTANTS
